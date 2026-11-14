@@ -12,7 +12,12 @@
   <script src="https://unpkg.com/vue@3.5.13/dist/vue.global.prod.js"></script>
   <style>
     .spot-marker { background: none; border: none; }
-    .cluster-marker { background: none; border: none; }
+    .cluster-marker { background: none; border: none; z-index: 10000 !important; }
+    .pin-wrap { width: 110px; text-align: center; }
+    .pin-shape { position: relative; width: 28px; height: 36px; margin: 0 auto; filter: drop-shadow(0 2px 3px rgba(0,0,0,.4)); }
+    .pin-shape svg { display: block; }
+    .pin-count { position: absolute; top: 5px; left: 0; width: 28px; text-align: center; font: 700 11px/18px system-ui, sans-serif; color: #7c2d12; }
+    .pin-label { display: inline-block; max-width: 110px; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; line-height: 14px; font-weight: 600; color: #0f172a; background: rgba(255,255,255,.85); border-radius: 4px; padding: 0 4px; }
     .cluster-wrap { width: 80px; text-align: center; }
     .cluster-pin { width: 44px; height: 44px; margin: 0 auto; border-radius: 50%; background: rgba(2,132,199,.9); border: 3px solid #f97316; color: #fff; font: 700 14px/38px system-ui, sans-serif; text-align: center; box-shadow: 0 2px 8px rgba(0,0,0,.5); }
     .cluster-city { margin: 2px auto 0; max-width: 80px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; line-height: 14px; color: #fff; background: rgba(0,0,0,.75); border-radius: 4px; padding: 0 4px; }
@@ -26,6 +31,7 @@
     .spot-popup .spot-row:hover span { text-decoration: underline; }
     .spot-popup .spot-row img { width: 56px; height: 32px; object-fit: cover; border-radius: 4px; flex-shrink: 0; }
     .spot-popup .spot-row span { line-height: 1.25; }
+    .spot-popup .spot-date { color: #475569; font-size: 11px; }
     .picking .leaflet-container { cursor: crosshair !important; }
   </style>
 </head>
@@ -91,16 +97,34 @@
       <p v-else-if="editMode" class="text-sm text-slate-400">Click a video below to tag its location.</p>
       <p v-else class="text-sm text-slate-400">Click a pin or a video to see it on the map.</p>
 
-      <ul class="overflow-y-auto space-y-1 pr-1 flex-1">
-        <li v-for="v in mapList" :key="v.id">
-          <button @click="select(v)" :class="['w-full text-left px-2 py-1.5 rounded text-sm truncate',
-                  selectedId === v.id ? 'bg-slate-600' : 'hover:bg-slate-700']">
-            <span v-if="hasPin(v)" class="text-orange-400">📍</span>
-            <span v-else class="text-slate-500">○</span>
-            {{ v.title }}
+      <div class="overflow-y-auto pr-1 flex-1 space-y-3">
+        <div v-for="g in mapGroups" :key="g.country">
+          <button @click="toggleSection(g.country)" class="text-xs font-semibold text-slate-300 hover:text-white">
+            {{ closedSections[g.country] ? '▸' : '▾' }} {{ g.country }}
           </button>
-        </li>
-      </ul>
+          <div v-for="c in g.cities" :key="c.city" v-show="!closedSections[g.country]" class="mt-2 rounded-lg border border-slate-600 bg-slate-900/60 p-2">
+            <button @click="toggleSection(g.country + '/' + c.city)" class="flex w-full items-center justify-between mb-1 text-left">
+              <span class="text-sm font-semibold text-sky-200">{{ closedSections[g.country + '/' + c.city] ? '▸' : '▾' }} 📍 {{ c.city }}</span>
+              <span class="px-2 py-0.5 rounded-full bg-sky-900/60 border border-sky-600 text-[11px] text-sky-200">{{ c.videos.length }}</span>
+            </button>
+            <div v-show="!closedSections[g.country + '/' + c.city]" class="space-y-2">
+              <div v-for="sp in c.spots" :key="sp.key" class="rounded bg-slate-800/70 p-1.5">
+                <button @click="toggleSection(g.country + '/' + c.city + '/' + sp.key)" class="w-full text-left text-[11px] font-semibold text-slate-300 hover:text-white px-1 mb-1">
+                  {{ closedSections[g.country + '/' + c.city + '/' + sp.key] ? '▸' : '▾' }} {{ sp.placed ? '📍' : '○' }} {{ sp.label }} · {{ sp.videos.length }}
+                </button>
+                <ul v-show="!closedSections[g.country + '/' + c.city + '/' + sp.key]" class="space-y-1">
+                  <li v-for="v in sp.videos" :key="v.id">
+                    <button @click="select(v); playerId = v.id" :class="['w-full text-left px-2 py-1.5 rounded text-sm truncate',
+                            selectedId === v.id ? 'bg-slate-600' : 'hover:bg-slate-700']">
+                      {{ v.title }}
+                    </button>
+                  </li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
     </aside>
 
     <div class="bg-slate-800 rounded-lg overflow-hidden" :class="{ picking: pickId }">
@@ -110,7 +134,7 @@
 
   <!-- VIDEOS TAB -->
   <!-- in-page YouTube player (thumbnail click) -->
-  <div v-if="playerId" @click.self="playerId = null" class="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
+  <div v-if="playerId" @click.self="playerId = null" style="z-index: 10000" class="fixed inset-0 bg-black/80 flex items-center justify-center p-4">
     <div class="w-full max-w-3xl">
       <div class="flex justify-between items-center mb-2">
         <a :href="ytUrl(playerId)" target="_blank" rel="noopener" class="text-xs text-sky-300 underline">Open on YouTube</a>
@@ -589,40 +613,40 @@
     { id: 'yoyogi',   name: '代々木公園', lat: 35.671405, lng: 139.695172 },
     { id: 'meguro',   name: '目黒区民センター体育館', lat: 35.635744, lng: 139.708260 },
     { id: 'buddy',    name: 'BUDDYスポーツアリーナ（有明）', lat: 35.637039, lng: 139.781082 },
-    { id: 'wings',    name: 'ウィングス京都', lat: 35.018257, lng: 135.740145 },
-    { id: 'nakagyo',  name: '京都市中京地域体育館', lat: null, lng: null },
+    { id: 'wings',    name: 'ウィングス京都', lat: 35.010824, lng: 135.759646 },
+    { id: 'nakagyo',  name: '京都市中京地域体育館', lat: 35.009106, lng: 135.734055 },
     { id: 'pearl',    name: '24 Hour Fitness (Pearl District, Portland)', lat: 45.528284, lng: -122.683843 },
     { id: 'northpark', name: 'North Park Blocks (Portland)', lat: 45.524927, lng: -122.679457 },
-    { id: 'caj-higashikurume', name: 'CAJ東久留米', lat: null, lng: null },
-    { id: 'komagome-bunkyo', name: '文京区勤労福祉会館（駒込）', lat: null, lng: null },
+    { id: 'caj-higashikurume', name: 'CAJ東久留米', lat: 35.759055, lng: 139.536370 },
+    { id: 'komagome-bunkyo', name: '文京区勤労福祉会館（駒込）', lat: 35.733146, lng: 139.755593 },
     { id: 'heiwadai', name: '練馬区立平和台体育館', lat: 35.759294, lng: 139.661612 },
     { id: 'hikarigaoka', name: '光が丘公園', lat: 35.762242, lng: 139.630230 },
     { id: 'kishine', name: '岸根公園', lat: 35.496110, lng: 139.616779 },
-    { id: 'ikebukuro-jhs', name: '豊島区立 池袋中学校', lat: null, lng: null },
+    { id: 'ikebukuro-jhs', name: '豊島区立 池袋中学校', lat: 35.742130, lng: 139.715179 },
     { id: 'lake-oswego', name: 'Lake Oswego', lat: 45.420675, lng: -122.670649 },
     { id: 'round1-hakata', name: 'Round1 博多', lat: 33.583943, lng: 130.438238 },
-    { id: 'higashiyama-gym', name: '東山地域体育館（京都）', lat: null, lng: null },
+    { id: 'higashiyama-gym', name: '東山地域体育館（京都）', lat: 34.997267, lng: 135.776291 },
     { id: 'hidden-creek', name: 'Hidden Creek Community Center (Hillsboro)', lat: 45.523556, lng: -122.930708 },
     { id: 'beaverton', name: '24 Hour Fitness (Beaverton)', lat: 45.439066, lng: -122.829637 },
-    { id: 'fushimi-hokubu', name: '伏見北部地域体育館', lat: null, lng: null },
+    { id: 'fushimi-hokubu', name: '伏見北部地域体育館', lat: 34.950264, lng: 135.757324 },
     { id: 'higashiyama-ikiiki', name: '京都市東山いきいき市民活動センター', lat: 35.007862, lng: 135.776674 },
     { id: 'fukushima-sports', name: '福島スポーツセンター（大阪）', lat: 34.691621, lng: 135.473106 },
     { id: 'nishimiya-nosawa', name: '西宮の沢公園（札幌）', lat: 43.101135, lng: 141.261362 },
     { id: 'sapporo-nishino', name: '札幌市西野児童会館', lat: 43.065840, lng: 141.271393 },
     { id: 'sapporo-heiwa', name: '札幌市平和児童会館', lat: 43.059418, lng: 141.256102 },
     { id: 'hirakata-koen', name: '枚方公園（大阪）', lat: 34.811404, lng: 135.639370 },
-    { id: 'minatonomori', name: 'みなとのもり公園（神戸）', lat: null, lng: null },
-    { id: 'sennan-long', name: '泉南ロングパーク（大阪、和歌山？）', lat: null, lng: null },
-    { id: 'ojigaoka-shiga', name: '皇子が丘公園（滋賀）', lat: null, lng: null },
+    { id: 'minatonomori', name: 'みなとのもり公園（神戸）', lat: 34.698498, lng: 135.215591 },
+    { id: 'sennan-long', name: '泉南ロングパーク（大阪、和歌山？）', lat: 34.382524, lng: 135.268261 },
+    { id: 'ojigaoka-shiga', name: '皇子が丘公園（滋賀）', lat: 35.023849, lng: 135.851074 },
     { id: 'ahara-park', name: '安良波公園', lat: 26.303900, lng: 127.758917 },
     { id: 'hos-sumiyoshi', name: 'HOS住吉スポーツセンター（大阪）', lat: 34.591999, lng: 135.511559 },
-    { id: 'uji-minami-jhs', name: '宇治市立南宇治中学校', lat: null, lng: null },
+    { id: 'uji-minami-jhs', name: '宇治市立南宇治中学校', lat: 34.869861, lng: 135.766528 },
     { id: 'ryokyo-nagoya', name: '露橋公園（名古屋）', lat: 35.148998, lng: 136.886835 },
     { id: 'suma-kaihin', name: '須磨海浜公園（神戸）', lat: 34.647107, lng: 135.126682 },
     { id: 'nojiriko', name: '野尻湖（長野）', lat: 36.825345, lng: 138.218077 },
-    { id: 'shimogyo-gym', name: '下京地域体育館（京都）', lat: null, lng: null },
+    { id: 'shimogyo-gym', name: '下京地域体育館（京都）', lat: 34.986320, lng: 135.766861 },
     { id: 'wallace-park', name: 'Wallace Park (Portland)', lat: 45.533258, lng: -122.703876 },
-    { id: 'takatori', name: '鷹取（兵庫）', lat: null, lng: null },
+    { id: 'takatori', name: '鷹取（兵庫）', lat: 34.651372, lng: 135.135259 },
     { id: 'tennoji-sports', name: '大阪市立天王寺スポーツセンター', lat: 34.670913, lng: 135.528585 },
   ];
 
@@ -639,7 +663,7 @@
     'minatonomori': ['日本', '神戸'], 'ojigaoka-shiga': ['日本', '滋賀'],
     'pearl': ['アメリカ', 'Portland'], 'northpark': ['アメリカ', 'Portland'],
     'lake-oswego': ['アメリカ', 'Lake Oswego'], 'hidden-creek': ['アメリカ', 'Hillsboro'], 'beaverton': ['アメリカ', 'Beaverton'],
-    'ahara-park': ['日本', '北谷'], 'hos-sumiyoshi': ['日本', '大阪'], 'uji-minami-jhs': ['日本', '宇治'],
+    'ahara-park': ['日本', '沖縄'], 'hos-sumiyoshi': ['日本', '大阪'], 'uji-minami-jhs': ['日本', '京都'],
     'ryokyo-nagoya': ['日本', '名古屋'], 'suma-kaihin': ['日本', '神戸'], 'nojiriko': ['日本', '長野'],
     'shimogyo-gym': ['日本', '京都'], 'wallace-park': ['アメリカ', 'Portland'],
     'takatori': ['日本', '神戸'], 'tennoji-sports': ['日本', '大阪'],
@@ -649,6 +673,13 @@
   const SPOT_SHORT = {
     'pearl': 'Pearl District', 'northpark': 'North Park', 'beaverton': 'Beaverton',
     'wallace-park': 'Wallace Park', 'lake-oswego': 'Lake Oswego', 'hidden-creek': 'Hidden Creek',
+  };
+
+  // region name for each city, used for the map cluster labels
+  const REGION_OF = {
+    '東京': '関東', '横浜': '関東', '長野': '甲信越', '名古屋': '中部', '京都': '関西', '大阪': '関西',
+    '神戸': '関西', '宇治': '関西', '滋賀': '関西', '札幌': '北海道', '福岡': '九州', '沖縄': '沖縄',
+    'Portland': '北米', 'Lake Oswego': '北米', 'Hillsboro': '北米', 'Beaverton': '北米',
   };
 
   const STORE_KEY = 'basketball-tracker-v1';
@@ -678,6 +709,14 @@
           id, title, kind: 'unsorted', loc: null, likes: [], filmed: FILMED[id] || '', dateOk: false,
           ...(savedById.get(id) || {}),
         })),
+      });
+
+      // videos tagged before a spot had coordinates: fill them in now
+      state.videos.forEach(v => {
+        if (v.loc && v.loc.spotId && v.loc.lat == null) {
+          const s = SPOTS.find(x => x.id === v.loc.spotId);
+          if (s && s.lat != null) { v.loc.lat = s.lat; v.loc.lng = s.lng; }
+        }
       });
 
       const tabs = [
@@ -736,9 +775,32 @@
         });
       });
 
-      const mapList = computed(() => {
+      // open/closed state of the Map tab's country and city blocks (true = closed)
+      const closedSections = reactive({});
+      function toggleSection(key) { closedSections[key] = !closedSections[key]; }
+
+      // Map tab list: videos grouped by country, then city (same grouping as the location badges)
+      const mapGroups = computed(() => {
         const s = mapQ.value.trim().toLowerCase();
-        return state.videos.filter(v => v.kind !== 'other' && (!s || v.title.toLowerCase().includes(s)));
+        const groups = [];
+        for (const v of state.videos) {
+          if (v.kind === 'other') continue;
+          if (s && !v.title.toLowerCase().includes(s)) continue;
+          const [country, city] = v.loc && v.loc.spotId ? (SPOT_AREA[v.loc.spotId] || ['Other', 'Other'])
+            : v.loc ? ['Custom pin', 'Custom (click map)'] : ['No location', 'Unplaced'];
+          let g = groups.find(x => x.country === country);
+          if (!g) groups.push(g = { country, cities: [] });
+          let c = g.cities.find(x => x.city === city);
+          if (!c) g.cities.push(c = { city, videos: [], spots: [] });
+          c.videos.push(v);
+          // small section per spot inside the city
+          const key = v.loc ? (v.loc.spotId || 'custom') : 'none';
+          const label = v.loc ? ((SPOTS.find(x => x.id === v.loc.spotId) || {}).name || v.loc.name || 'Custom pin') : 'No location';
+          let sp = c.spots.find(x => x.key === key);
+          if (!sp) c.spots.push(sp = { key, label, placed: hasPin(v), videos: [] });
+          sp.videos.push(v);
+        }
+        return groups;
       });
 
       const likeVideos = computed(() =>
@@ -771,23 +833,32 @@
         }
         for (const s of spots.values()) {
           const n = s.videos.length;
+          // a map pin (tip at the spot) with the video count inside, and the spot's short name below
           const icon = L.divIcon({
             className: 'spot-marker',
-            html: `<div class="spot-pin"><img src="${thumb(s.videos[0].id)}" alt=""><span class="spot-count">${n}</span></div>`
-              + (s.label ? `<div class="spot-city" title="${esc(s.name)}">${esc(s.label)}</div>` : ''),
-            iconSize: [72, 58],
-            iconAnchor: [36, 20],
+            html: `<div class="pin-wrap">`
+              + `<div class="pin-shape"><svg width="28" height="36" viewBox="0 0 28 36"><path d="M14 0C6.3 0 0 6.3 0 14c0 9.8 14 22 14 22s14-12.2 14-22C28 6.3 21.7 0 14 0z" fill="#f97316" stroke="#7c2d12" stroke-width="1.5"/><circle cx="14" cy="14" r="9" fill="#fff"/></svg><span class="pin-count">${n}</span></div>`
+              + (s.label ? `<div class="pin-label" title="${esc(s.name)}">${esc(s.label)}</div>` : '')
+              + `</div>`,
+            iconSize: [110, 62],
+            iconAnchor: [55, 36],
           });
           const rows = s.videos.map(v =>
-            `<div class="spot-row" data-vid="${v.id}"><img src="${thumb(v.id)}" alt=""><span>${esc(v.title)}</span></div>`).join('');
-          const marker = L.marker([s.lat, s.lng], { icon, title: s.name, videoCount: n, city: s.city })
-            .bindPopup(`<div class="spot-popup"><div class="spot-title">${esc(s.name)} · ${n}</div>${rows}</div>`, { maxHeight: 320, minWidth: 260 })
-            .addTo(layer);
-          // a row in the popup opens that video's player
-          marker.on('popupopen', e => {
-            e.popup.getElement().querySelectorAll('[data-vid]').forEach(el =>
-              el.addEventListener('click', () => { playerId.value = el.dataset.vid; }));
-          });
+            `<div class="spot-row" data-vid="${v.id}"><img src="${thumb(v.id)}" alt=""><span>${esc(v.title)}<br><small class="spot-date">Released ${RELEASED[v.id] || '?'}</small></span></div>`).join('');
+          // the map wraps around the world, so put a copy of each spot one world-width to each side
+          for (const off of [-360, 0, 360]) {
+            const marker = L.marker([s.lat, s.lng + off], {
+            icon, title: s.name, videoCount: n, city: s.city, region: REGION_OF[s.city] || '', spotLabel: s.label,
+            country: (SPOT_AREA[s.videos[0].loc.spotId] || [])[0] || '',
+          })
+              .bindPopup(`<div class="spot-popup"><div class="spot-title">${esc(s.name)} · ${n}</div>${rows}</div>`, { maxHeight: 320, minWidth: 260 })
+              .addTo(layer);
+            // a row in the popup opens that video's player
+            marker.on('popupopen', e => {
+              e.popup.getElement().querySelectorAll('[data-vid]').forEach(el =>
+                el.addEventListener('click', () => { playerId.value = el.dataset.vid; }));
+            });
+          }
         }
       }
 
@@ -946,26 +1017,60 @@
 
       onMounted(() => {
         map = L.map(mapEl.value).setView([35.68, 139.76], 10);
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-          maxZoom: 19,
-          attribution: '© OpenStreetMap',
-        }).addTo(map);
+        // map styles: pick one with the switcher at the top right
+        const esriCanvas = (name) => L.tileLayer(`https://services.arcgisonline.com/ArcGIS/rest/services/${name}/MapServer/tile/{z}/{y}/{x}`, {
+          maxZoom: 16, attribution: 'Tiles © Esri',
+        });
+        const baseLayers = {
+          'Dark': esriCanvas('Canvas/World_Dark_Gray_Base'),
+          'Light (gray)': esriCanvas('Canvas/World_Light_Gray_Base'),
+          'Standard (OSM)': L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 19, attribution: '© OpenStreetMap',
+          }),
+          'Satellite': L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+            maxZoom: 19, attribution: 'Tiles © Esri',
+          }),
+        };
+        baseLayers['Light (gray)'].addTo(map);
+        L.control.layers(baseLayers, null, { position: 'topright' }).addTo(map);
+        // cluster labels depend on zoom, so redraw them after each zoom change
+        map.on('zoomend', () => { if (layer) layer.refreshClusters(); });
         // spots that sit close together merge into one numbered cluster when zoomed out
         layer = L.markerClusterGroup({
           maxClusterRadius: 45,
           showCoverageOnHover: false,
           iconCreateFunction: cluster => {
-            // count of videos, labelled with the city holding most of them
+            // count of videos; label = the region if the cluster is in one region (e.g. 関東),
+            // otherwise the country holding most of its videos (e.g. 日本)
+            const byRegion = {};
+            const byCountry = {};
             const byCity = {};
+            const bySpot = {};
             let n = 0;
             for (const m of cluster.getAllChildMarkers()) {
               const c = m.options.videoCount || 0;
               n += c;
-              const city = m.options.city || '';
-              if (city) byCity[city] = (byCity[city] || 0) + c;
+              if (m.options.region) byRegion[m.options.region] = (byRegion[m.options.region] || 0) + c;
+              if (m.options.country) byCountry[m.options.country] = (byCountry[m.options.country] || 0) + c;
+              if (m.options.city) byCity[m.options.city] = (byCity[m.options.city] || 0) + c;
+              if (m.options.spotLabel) bySpot[m.options.spotLabel] = (bySpot[m.options.spotLabel] || 0) + c;
             }
-            const cities = Object.entries(byCity).sort((a, b) => b[1] - a[1]);
-            const label = cities.length ? cities[0][0] + (cities.length > 1 ? ` +${cities.length - 1}` : '') : '';
+            const regions = Object.entries(byRegion).sort((a, b) => b[1] - a[1]);
+            const countries = Object.entries(byCountry).sort((a, b) => b[1] - a[1]);
+            // total videos per country on the whole map
+            const totals = {};
+            for (const m of layer.getLayers()) {
+              if (m.options.country) totals[m.options.country] = (totals[m.options.country] || 0) + (m.options.videoCount || 0);
+            }
+            // the country name only once a cluster holds all of that country's videos (they have merged);
+            // until then, the region with most videos in it
+            // all of one country -> the country; all in one city -> the spot with most videos (e.g. Pearl District);
+            // otherwise the region with most videos
+            const topCountry = countries[0];
+            const topSpot = Object.entries(bySpot).sort((a, b) => b[1] - a[1])[0];
+            const label = topCountry && byCountry[topCountry[0]] === totals[topCountry[0]]
+              ? topCountry[0]
+              : (Object.keys(byCity).length === 1 && topSpot && !byCountry['日本'] ? topSpot[0] : (regions.length ? regions[0][0] : ''));
             return L.divIcon({
               className: 'cluster-marker',
               html: `<div class="cluster-wrap"><div class="cluster-pin">${n}</div>${label ? `<div class="cluster-city">${esc(label)}</div>` : ''}</div>`,
@@ -990,7 +1095,7 @@
       return {
         tabs, tab, tabClass, chipClass, filter, filters, editMode, toggleEdit, setFilmed, dateBad, RELEASED,
         showConfirmed, confirmedCount, showLocated, locatedCount, customOnly, customCount, confirmDate, canConfirm,
-        q, mapQ, likedOnly, kinds: KINDS, counts, visibleVideos, mapList, likeVideos,
+        q, mapQ, likedOnly, kinds: KINDS, counts, visibleVideos, mapGroups, closedSections, toggleSection, likeVideos,
         selected, selectedId, pickId, mapEl, drafts, spots: SPOTS,
         thumb, ytUrl, hasPin, select, locValue, applySpot, clearLoc, locChipClass, spotGroups, playerId, playerVideo, locOpenIds, toggleLocOpen,
         friendLikes, toggleLike, removeLike, addLike,
