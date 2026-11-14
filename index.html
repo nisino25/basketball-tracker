@@ -1,0 +1,1003 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Basketball Video Tracker</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+  <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+  <script src="https://unpkg.com/vue@3.5.13/dist/vue.global.prod.js"></script>
+  <style>
+    .spot-marker { background: none; border: none; }
+    .cluster-marker { background: none; border: none; }
+    .cluster-wrap { width: 80px; text-align: center; }
+    .cluster-pin { width: 44px; height: 44px; margin: 0 auto; border-radius: 50%; background: rgba(2,132,199,.9); border: 3px solid #f97316; color: #fff; font: 700 14px/38px system-ui, sans-serif; text-align: center; box-shadow: 0 2px 8px rgba(0,0,0,.5); }
+    .cluster-city { margin: 2px auto 0; max-width: 80px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; line-height: 14px; color: #fff; background: rgba(0,0,0,.75); border-radius: 4px; padding: 0 4px; }
+    .spot-city { width: 72px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; line-height: 14px; color: #fff; background: rgba(0,0,0,.75); border-radius: 4px; padding: 0 4px; }
+    .spot-pin { position: relative; width: 72px; height: 40px; }
+    .spot-pin img { width: 72px; height: 40px; object-fit: cover; display: block; border-radius: 6px; border: 2px solid #f97316; box-shadow: 0 2px 6px rgba(0,0,0,.5); }
+    .spot-count { position: absolute; top: -8px; right: -8px; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 999px; background: #0284c7; color: #fff; font: 700 11px/20px system-ui, sans-serif; text-align: center; box-shadow: 0 1px 4px rgba(0,0,0,.5); }
+    .spot-popup { color: #0f172a; font-size: 12px; }
+    .spot-popup .spot-title { font-weight: 700; margin-bottom: 4px; }
+    .spot-popup .spot-row { display: flex; gap: 8px; align-items: center; padding: 3px 0; cursor: pointer; }
+    .spot-popup .spot-row:hover span { text-decoration: underline; }
+    .spot-popup .spot-row img { width: 56px; height: 32px; object-fit: cover; border-radius: 4px; flex-shrink: 0; }
+    .spot-popup .spot-row span { line-height: 1.25; }
+    .picking .leaflet-container { cursor: crosshair !important; }
+  </style>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen">
+<div id="app" class="max-w-6xl mx-auto p-4">
+
+  <header class="flex flex-wrap items-center justify-between gap-3 mb-4">
+    <div>
+      <h1 class="text-2xl font-bold">🏀 Basketball Tracker</h1>
+      <p class="text-sm text-slate-400">
+        Basketball {{ counts.basketball }} · Unsorted {{ counts.unsorted }} · Not basketball {{ counts.other }} · On map {{ counts.placed }}
+      </p>
+    </div>
+    <div class="flex gap-2">
+      <button @click="exportData" class="px-3 py-1.5 rounded bg-slate-700 hover:bg-slate-600 text-sm">Export JSON</button>
+      <label class="px-3 py-1.5 rounded bg-slate-700 hover:bg-slate-600 text-sm cursor-pointer">
+        Import JSON
+        <input type="file" accept="application/json" class="hidden" @change="importData" />
+      </label>
+    </div>
+  </header>
+
+  <nav class="flex gap-2 mb-4">
+    <button v-for="t in tabs" :key="t.id" @click="tab = t.id" :class="tabClass(t.id)">{{ t.label }}</button>
+  </nav>
+
+  <!-- MAP TAB -->
+  <section v-show="tab === 'map'" class="grid gap-4 md:grid-cols-[300px_1fr]">
+    <aside class="bg-slate-800 rounded-lg p-3 flex flex-col gap-3 md:max-h-[75vh]">
+      <input v-model="mapQ" placeholder="Search title" class="w-full px-3 py-2 rounded bg-slate-900 border border-slate-700 text-sm" />
+
+      <button @click="toggleEdit" :class="chipClass(editMode)" class="w-full py-2 text-sm">
+        {{ editMode ? '✏️ Edit mode: ON' : '✏️ Edit mode: OFF' }}
+      </button>
+
+      <!-- edit mode: tag the selected video -->
+      <div v-if="editMode && selected" class="bg-slate-700 rounded p-3 space-y-2">
+        <img :src="thumb(selected.id)" class="rounded w-full" alt="" />
+        <p class="font-semibold text-sm">{{ selected.title }}</p>
+
+        <label class="block text-xs text-slate-300">Location
+          <select :value="locValue(selected)" @change="applySpot(selected, $event.target.value)"
+                  class="mt-1 w-full px-2 py-1.5 rounded bg-slate-900 border border-slate-600 text-sm">
+            <option value="">— none —</option>
+            <option v-for="s in spots" :key="s.id" :value="s.id">
+              {{ s.name }}{{ s.lat == null ? ' (click map to place)' : '' }}
+            </option>
+            <option value="custom">Custom (click map)</option>
+          </select>
+        </label>
+
+        <label v-if="selected.loc && !selected.loc.spotId" class="block text-xs text-slate-300">Place name
+          <input :value="selected.loc.name" @input="selected.loc.name = $event.target.value" placeholder="e.g. Yoyogi Park"
+                 class="mt-1 w-full px-2 py-1 rounded bg-slate-900 border border-slate-600 text-sm" />
+        </label>
+
+        <p v-if="pickId === selected.id" class="text-xs text-orange-300">Now click the map to place this video.</p>
+        <p v-else-if="selected.loc && selected.loc.lat != null" class="text-[11px] text-slate-400">
+          {{ selected.loc.lat.toFixed(5) }}, {{ selected.loc.lng.toFixed(5) }}
+        </p>
+        <button v-if="selected.loc" @click="clearLoc(selected)" class="px-3 py-1 rounded bg-slate-600 hover:bg-slate-500 text-xs">Clear location</button>
+      </div>
+      <p v-else-if="editMode" class="text-sm text-slate-400">Click a video below to tag its location.</p>
+      <p v-else class="text-sm text-slate-400">Click a pin or a video to see it on the map.</p>
+
+      <ul class="overflow-y-auto space-y-1 pr-1 flex-1">
+        <li v-for="v in mapList" :key="v.id">
+          <button @click="select(v)" :class="['w-full text-left px-2 py-1.5 rounded text-sm truncate',
+                  selectedId === v.id ? 'bg-slate-600' : 'hover:bg-slate-700']">
+            <span v-if="hasPin(v)" class="text-orange-400">📍</span>
+            <span v-else class="text-slate-500">○</span>
+            {{ v.title }}
+          </button>
+        </li>
+      </ul>
+    </aside>
+
+    <div class="bg-slate-800 rounded-lg overflow-hidden" :class="{ picking: pickId }">
+      <div ref="mapEl" class="w-full h-[70vh] md:h-[75vh]"></div>
+    </div>
+  </section>
+
+  <!-- VIDEOS TAB -->
+  <!-- in-page YouTube player (thumbnail click) -->
+  <div v-if="playerId" @click.self="playerId = null" class="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
+    <div class="w-full max-w-3xl">
+      <div class="flex justify-between items-center mb-2">
+        <a :href="ytUrl(playerId)" target="_blank" rel="noopener" class="text-xs text-sky-300 underline">Open on YouTube</a>
+        <button @click="playerId = null" class="px-3 py-1 rounded bg-slate-700 hover:bg-slate-600 text-sm">✕ Close</button>
+      </div>
+      <div v-if="playerVideo" class="mb-2">
+        <p class="font-semibold text-sm truncate">{{ playerVideo.title }}</p>
+        <p class="text-xs text-slate-300">
+          Released {{ RELEASED[playerVideo.id] || '?' }} · Filmed {{ playerVideo.filmed || '—' }}
+          <span v-if="playerVideo.loc && playerVideo.loc.name"> · 📍 {{ playerVideo.loc.name }}</span>
+        </p>
+      </div>
+      <div class="aspect-video w-full bg-black rounded overflow-hidden">
+        <iframe :src="'https://www.youtube.com/embed/' + playerId" class="w-full h-full" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+      </div>
+    </div>
+  </div>
+
+  <section v-show="tab === 'videos'">
+    <div class="flex flex-wrap items-center gap-2 mb-3">
+      <input v-model="q" placeholder="Search title" class="flex-1 min-w-[180px] px-3 py-2 rounded bg-slate-800 border border-slate-700 text-sm" />
+      <button @click="showConfirmed = !showConfirmed" :class="chipClass(showConfirmed)">
+        {{ showConfirmed ? 'Hide confirmed' : 'Show confirmed' }} ({{ confirmedCount }})
+      </button>
+      <button @click="showLocated = !showLocated" :class="chipClass(showLocated)">
+        {{ showLocated ? 'Hide located' : 'Show located' }} ({{ locatedCount }})
+      </button>
+      <button @click="customOnly = !customOnly" :class="chipClass(customOnly)">
+        {{ customOnly ? 'Show all' : 'Custom pin only' }} ({{ customCount }})
+      </button>
+      <button v-for="f in filters" :key="f.id" @click="filter = f.id"
+              :class="chipClass(filter === f.id)">{{ f.label }} ({{ f.count }})</button>
+      <button @click="guessOther" class="px-3 py-1.5 rounded bg-slate-700 hover:bg-slate-600 text-sm">
+        Guess game/music titles → Not basketball
+      </button>
+    </div>
+
+    <ul class="space-y-2">
+      <li v-for="v in visibleVideos" :key="v.id" class="flex gap-3 items-center bg-slate-800 rounded p-2">
+        <a :href="ytUrl(v.id)" @click.prevent="playerId = v.id" class="shrink-0">
+          <img :src="thumb(v.id)" loading="lazy" alt="" class="w-32 sm:w-40 rounded" />
+        </a>
+        <div class="flex-1 min-w-0">
+          <p class="text-sm truncate">{{ v.title }}</p>
+          <span v-if="v.loc && v.loc.name" class="inline-block max-w-full truncate mt-0.5 mb-1 px-2 py-0.5 rounded-full bg-sky-900/60 border border-sky-600 text-[11px] font-medium text-sky-200">📍 {{ v.loc.name }}</span>
+          <div class="flex items-center gap-2 mt-1">
+            <span class="text-[11px] text-slate-400">Released <span class="text-slate-300">{{ RELEASED[v.id] || '?' }}</span></span>
+            <span class="text-[11px] text-slate-400">Filmed</span>
+            <input :value="v.filmed || ''" @change="setFilmed(v, $event.target.value)" placeholder="yyyy-mm-dd" maxlength="10"
+                   :class="['w-28 px-2 py-0.5 rounded bg-slate-900 border text-xs', dateBad(v.filmed) ? 'border-red-500' : 'border-slate-600']" />
+            <button @click="confirmDate(v)" :disabled="!v.dateOk && !canConfirm(v)"
+                    :class="['px-2 py-0.5 rounded text-xs font-semibold',
+                             v.dateOk ? 'bg-emerald-600 hover:bg-emerald-500 text-white' : 'bg-slate-700 hover:bg-slate-600 text-slate-200 disabled:opacity-40']">
+              {{ v.dateOk ? '✓ Confirmed (undo)' : 'Confirm date' }}
+            </button>
+          </div>
+          <div class="flex flex-wrap items-center gap-2 mt-1">
+            <span class="text-[11px] text-slate-400">Location</span>
+            <button @click="toggleLocOpen(v.id)" :class="chipClass(!!locOpenIds[v.id])">{{ locOpenIds[v.id] ? 'Close' : (v.loc && v.loc.name ? 'Change' : 'Choose') }}</button>
+            <div v-if="locOpenIds[v.id]" class="flex flex-wrap gap-1 w-full">
+              <button @click="applySpot(v, '')" :class="locChipClass(!locValue(v))">— none —</button>
+              <div v-for="g in spotGroups" :key="g.country" class="w-full">
+                <p class="text-[11px] font-semibold text-slate-400 mt-1">{{ g.country }}</p>
+                <div v-for="c in g.cities" :key="c.city" class="flex flex-wrap items-center gap-1 mt-0.5">
+                  <span class="text-[10px] text-slate-500 w-24 shrink-0">{{ c.city }}</span>
+                  <button v-for="s in c.spots" :key="s.id" @click="applySpot(v, s.id)" :class="locChipClass(locValue(v) === s.id)">
+                    📍 {{ s.name }}{{ s.lat == null ? ' ⊕' : '' }}
+                  </button>
+                </div>
+              </div>
+              <button @click="applySpot(v, 'custom')" :class="locChipClass(locValue(v) === 'custom')">Custom (click map)</button>
+            </div>
+            <span v-if="pickId === v.id" class="text-[11px] text-orange-300">Open the Map tab and click to place it</span>
+          </div>
+          <div class="flex flex-wrap gap-1 mt-2">
+            <button v-for="k in kinds" :key="k.id" @click="v.kind = k.id" :class="chipClass(v.kind === k.id)">{{ k.label }}</button>
+          </div>
+        </div>
+      </li>
+    </ul>
+    <p v-if="!visibleVideos.length" class="text-sm text-slate-400 mt-4">No videos match.</p>
+  </section>
+
+  <!-- LIKES TAB -->
+  <section v-show="tab === 'likes'">
+    <div class="flex items-center gap-3 mb-3 text-sm">
+      <label class="flex items-center gap-2 cursor-pointer">
+        <input type="checkbox" v-model="likedOnly" /> Liked only
+      </label>
+      <span class="text-slate-400">{{ likeVideos.length }} videos</span>
+    </div>
+
+    <ul class="space-y-2">
+      <li v-for="v in likeVideos" :key="v.id" class="flex gap-3 bg-slate-800 rounded p-2">
+        <a :href="ytUrl(v.id)" target="_blank" rel="noopener" class="shrink-0">
+          <img :src="thumb(v.id)" loading="lazy" alt="" class="w-32 sm:w-40 rounded" />
+        </a>
+        <div class="flex-1 min-w-0">
+          <p class="text-sm truncate">{{ v.title }}</p>
+
+          <div class="flex flex-wrap gap-1 mt-2">
+            <button @click="toggleLike(v, 'You')" :class="chipClass(v.likes.includes('You'))">♥ You</button>
+            <span v-for="n in friendLikes(v)" :key="n"
+                  class="px-2 py-1 rounded-full bg-pink-900/60 text-pink-200 text-xs flex items-center gap-1">
+              ♥ {{ n }}
+              <button @click="removeLike(v, n)" class="text-pink-300 hover:text-white" aria-label="remove">×</button>
+            </span>
+          </div>
+
+          <form @submit.prevent="addLike(v)" class="flex gap-2 mt-2">
+            <input v-model="drafts[v.id]" placeholder="Friend's nickname" maxlength="20"
+                   class="flex-1 min-w-0 px-2 py-1 rounded bg-slate-900 border border-slate-700 text-sm" />
+            <button class="px-3 py-1 rounded bg-slate-700 hover:bg-slate-600 text-sm">Add</button>
+          </form>
+        </div>
+      </li>
+    </ul>
+    <p v-if="!likeVideos.length" class="text-sm text-slate-400 mt-4">Nothing to show.</p>
+  </section>
+
+</div>
+
+<script>
+  // [youtube video id, title] — copied from the channel's Videos page (329 loaded)
+  const SEED = [
+    ["RZv13i2bsAY","Shinjuku bball"],
+    ["k_5Bc9pOHDc","FC25 1"],["BrnUtSSa-1M","smash 2025 1,2"],["XsgDvZqhNYU","1025 目黒"],["OHdWXezn_5U","Sep14 CAJjust cardio atp"],["0cJd3bOjBfI","2026 8 12 Nojiriko Run"],["foJeLfhIFuk","0728 komagome"],["KmdKf84L4As","random ps5 clips"],["FLSlJFGjIBg","0923 目黒"],["plLEj3RVD8g","fifa23 last dance"],["8IdnvwzeEVw","last random ps4 clips"],["z951Yn5AUcs","FIFA23"],["yhN6eOkkyeo","random ps4 clips in 2026"],["UWzjOxG3VS8","2025 0704  平和台"],["bdYxky8hCGg","0710 光が丘"],["h-fT9xdp_2Y","2025 0619"],["SA2vqNBOhNw","2025 0517 at CAJ"],["ihWUZ-i_i-Q","2025 0430"],["4UYkSr8WdnU","0517"],["NLm9uBp-Vyw","2k26"],["HvCl3sxBC80","2025 12 13"],["JJFLePgvwLc","2025 04 23"],["fE4_fGrtU10","6/2/2027 one piece lego"],["6a2vUXAkjaU","岸根公園　バスケ"],["ZHolvDhbL1s","草むしり 20260504"],["z_7Bh4t-6nU","2k25 28 37"],["e03aDE6uEsk","final fifa20 highlight"],["ehXoay_lkXo","ps4 2025 summer"],["0qUYWjwIUhI","2k18 comp"],["AR3wupLdyCI","2k17 compilation"],["IrkH3AazPk4","2k25 21- 27"],["cWRkqovT7TA","2k25 11 20"],["pYJoCx1ZBKY","2k25 1-10"],["eDY66HqKheE","0413 Kitaikebukuro"],["qzZNmaxi5jU","0326"],["J4c205i41Ug","0320"],["59cGFalIaeQ","0313"],["UzcbzRzJIu8","0219"],["XlFEmbL7Aq0","0208 Kita ikebukuro"],["0aWT9V2v3SI","Lake Yamanaka Run 20250504"],["z4KKmLnHjjw","1 29"],["IPB8MzVaX0Y","0925 Oregon"],["nfiSwqt3Dz4","0101 hakata"],["8vpNYECI0Cs","1208"],["7NApvq5s1Ks","4 19 代々木公園"],["AERbMX3TKdw","1128"],["GRcrk9xNNGI","1127"],["zXcvIEHh-Fw","smash bros comp"],["Azj1GJp5TCc","FIFA20 2024 part2"],["7SAqi8K1JtQ","random ps4 clips"],["0128Lk-6-kE","1109"],["gRstFN0NI4k","1104"],["fPwgyFcsN8E","1027"],["rNUcJNrV-7Y","1024"],["hIH0bXVDlHo","1013"],["3ABY9GC1vxY","1006"],["nQV_pYEeRjY","0907"],["e8ash1Heq8s","0915"],["W8_gizLq4l8","0825"],["w2F1gqOk4uo","0904"],["enbxiade1M8","0818"],["lqZJXZcoJ4o","0803"],["ARS513lvu14","0728"],["UiuYPsdjewA","0721"],["hSkyzTlUlL8","0718"],["QUl8kkVCvRQ","0712"],["cLn8mVVd9KI","0622"],["pE1j931wEZ0","1002 Hillsboro Oregon 🇺🇸"],["grEJGLoY3Lo","0701 finished"],["a9E0bXXAJgE","PS4 FIFA20"],["GdiGLu54ix0","PS4 2k23"],["LwhVwg11A3M","PS4 randomclips"],["2VQILDwubRk","0620"],["kbD7HDuYIcU","0616"],["j2lYXDcDu9I","0609"],["BBoCSEfVFVQ","0530"],["WFjU5kw13mo","0526"],["d7QMT3VJ8HE","0522"],["JAL19Vxkjuo","5 19"],["z7h_1-T9Zso","5 15"],["2blICpANME8","5 12"],["EryXyHPddyA","5 4 Tokyo"],["ait_DSDOhBE","4 28"],["n2A6h_WD-90","4-26"],["-S3pC9Tf_CE","4-19 Okinawa"],["zIQT_UdL8PI","4 17"],["1aUlneFmMbc","4 14"],["2fmQWTfbJVY","4 7"],["lxS_C7rTR9k","4 4 Fushimi"],["4CtlUSs5YqQ","2k24 71 75"],["rzKFwP69LOQ","3-31 KYOTO"],["qApGbd4nkU8","2k24 61 70"],["Evc06pAwSiA","3 25 Kyoto"],["P7cACMa0E_8","3 20 Kyoto"],["SRYnXyIQ3Ig","Kyoto 3 16"],["mNXaHSusdRc","3 10 Kyoto"],["_8BGITjEC9Q","3 8 Kyoto"],["gVDmJgcDrGk","3 6 Osaka"],["rnS39A6iN94","3-3 Kyoto"],["fVwCPSEQjR8","2k24 51 60"],["hBnISeBKTEU","3-1 kyoto"],["aolTN8a3sgI","2 29 Kyoto"],["VfrFrXZtg6A","2 24 Osaka Sumiyoshi"],["FGRtSCZ9KAY","2 18 Uji"],["KfhHrxT-iNk","2 15 Kyoto"],["NyLKLnFWmYA","2 12 Kyoto"],["7M7tj7EQFEw","2 11 Osaka"],["dMB5MaL_aHE","2k24 41 50"],["5xAfbECN7QI","2024-2-9"],["8LdZOxu8Sqw","2024-2-3 京都"],["nS4WchZ7cq4","jan 26 Osaka"],["hsT-Xgo1Tfg","1 14 osaka"],["XK-BAhmNGaw","2k24 31 40"],["jJ7QmBDbX0U","1 9 2024 Osaka"],["jKrFUN0SDwg","2k24 21 30"],["KmepzAnYwi0","2k24 11 20"],["zyq_slhN-B4","11:26 大阪福島スポーツセンターバスケ"],["Dl8ng9tjsd0","11/3 露橋公演バスケ（名古屋）"],["uReZUW8YTY0","2k24 1 10"],["7mz-JntGP5A","2024 9月　バスケ"],["HSlJ_LyYfQ8","2k23 61"],["gXs1s14IDKE","枚方公園　10 22"],["JkWwtrmc_1o","神戸　みなとのもり公園　10:14"],["G-mcYwq9-s4","2k23 51-60"],["8B46RNTHoF0","rdr2 2"],["rSpEFitTayk","2023 9 30 yoyogi park"],["R04Cu6gpe0U","９月１０日　代々木公園バスケ"],["4XPt-02fQNg","９月２日　鷹取　バスケ"],["FKQivJD2yfc","8:19 泉南ロングパーク"],["8Nq3579N9yA","2023 8:12 野尻湖"],["DolGS588RZk","2k23 41 50"],["Vf3MfdPo-2U","8:4 枚方公園　バスケ"],["KF8ZQh_PJYA","2k23 31 40"],["diIBfHQPFG8","7:29 みなとのもり公園"],["1qA4NR4HgZ0","泉南ロングパーク　2023:7:16"],["WG4np-SfSVc","皇子が丘公園　バスケ"],["knaAai_0eFQ","RDR"],["80Ulk03KsjQ","ghost of tsushima"],["gInqMU5wZGk","just cause 4"],["dPj6ch4sD9k","枚方公園バスケ"],["YFPkiSuEnc8","泉南ロングビーチ　バスケ"],["6Bh_Bmo9-fY","みなとのもり公園　バスケ　6/4"],["Y1ur7SWvWVs","The Crew® 2_20230104093631"],["UNTDpm9INDM","FIFA 20_20221218215454"],["rwz4gkc-nDc","did i kill"],["LRg7ESxwrsI","2k23  21 30"],["4jg_uZHyjS0","2k23 10-20"],["ojTeaf_YpY8","2k23 0 10"],["LmvaYeVr97E","2k22 81-91"],["T3C7X-tSb-I","2k22 71 80"],["unUa4NIUs3w","2k22 61 70"],["C10zSR6mufI","2k22 51 60"],["iZVGl9OSdCc","2k22 41 50"],["h0npmYdl4fs","2k arcade- best friend"],["F8zBsxNEhR0","2k arcade moltev"],["f1sp0HjM5v4","2k22 31 40"],["WUBYXtqebyo","2k arcade-after hours"],["fAQII8WEgpY","2k22 21 30"],["XbnyjIquCQA","2k22 1 10"],["tjN2-CTK6N0","2k22 11 20"],["PzU3fJmq3V0","random vid 2020"],["ClvWqEJ9w6w","pubg 51 60"],["bND0soRexCU","pubg 40 50"],["SropntfQvvA","2020 Oregon"],["GkNh4tEaZuY","pubg 21 30"],["VCGBpIjFo6I","pubg 11 20"],["ZbdHTx6EQ34","pubg 1 10"],["N_q-h7AwTnU","NBA 61 70"],["u8BnfGAUlK0","NBA 51 60"],["51RAsjltUNQ","nba41 50"],["Ahc6g4z2IFE","NBA 31 40"],["v7-CusGfcr4","NBA 21 30"],["cYGczteH56A","3 3 21"],["E2vjhWJHicQ","2k comp 11 20"],["Yf6BMeqN_aI","2k comp 0 10"],["5LrCl4-s4p4","12 2 20"],["pk1Q0tC_ScI","11 2 20"],["MD7PIwDXMFk","10 29 20"],["kqCGa4g50Y8","10:20:20"],["uf378sOVf_8","9 29 2020"],["ixqD-IFedhQ","9 9 20"],["KCyRpjkXZ-U","9 2 2020"],["B3sTfErht40","8 27 2020"],["B3zVUvKu7tM","8 10 2020"],["nkvLe_Hn4k0","Aug 10, Northern Park"],["tUub6SDd5FU","Jul 31, Northern park"],["ZdKitCo-C40","Aug 5, Northern Park"],["SWo5rLSfp2I","June 2020Drone"],["SxTOzd3VhoE","Jul 2020Drone"],["qNjz48UepzQ","NBA2K20 My carrer All Star"],["VTn4NhGYqfA","7 23 2020Northern Park"],["Y8ifdp-qrv4","Bball at Northern park"],["4nr8MKGtOaQ","Nba2k20 my carrerre"],["mwJMYEaJ2go","Jun 2020 1st half"],["fqtlgRIAJM4","Mar 2020, mini"],["MQdfWv6qkFY","My carrer nba2k20 mobile"],["9iiTp9wf4JU","2028 zion"],["YHPzpEzsEAE","2027 curry"],["PTPRmxt9fcM","2026 Giannis"],["qBhRZNk33SQ","2025 MJ"],["5HTSlFznhu0","2024 Trae"],["8dZ_GiL1PQY","2023 (Trae)"],["2L8zslof95s","2022 (LeBron)"],["4ACoNIKQYwo","2021 (melo)"],["rxTaOuXYlBQ","2020 (drose)"],["bz-n-Ta2kEA","2023"],["I5xORWrwjF4","2022"],["40cvTaOjGZE","2020 Mar"],["Pu-N9qvkEj8","Sakura in Portland 2020.3.21"],["92T4JxVopAM","2020 3 15"],["9uDx_X6yb0M","2020 3 13"],["6LOjun3_JUs","2020 3 11"],["k-uJUqi7QtM","2020.3.9"],["ZVXO8M1gVJs","2020 3 8"],["E5wTFqyinBo","2020.3.4"],["3nGMU6_-j0Y","Feb highlights 2020"],["moUjpLxoUyg","2020 3 2"],["x57v6ool3Jo","2020 2 28"],["__Jz1J9c2j0","2020 2 29"],["beNfgNveEmE","2020.2.26"],["aBKog8OL8ws","2020 2 23"],["eEuS_Ein7Yc","2020.2.21"],["ofe1Tj5igVc","2020.2.19"],["nKVbwJKiPC0","Feb 20. comp(仮)"],["CkHo0lUxFXk","2020.2.16"],["JH9bJFYPvuc","2020 2 14"],["Uw1CcplcZuw","2020.2.12"],["Zm-vDU1j7_k","2020.2.8"],["8jpuzFjQzsQ","2020.2.2"],["vRy1Myb1s14","Jan basketball highlight"],["W3ffa9F7F3Q","2020.1.31"],["pJJzTuxYzBY","FIFA 20"],["RVPbqiqNxTQ","2020.1.27"],["6QA0yBz2I0E","FIFA 20 222 Goal"],["D_QPKhYlhf4","2020.1.25"],["1gipVCZ2Qeg","2020.1.22"],["FOL2tGxmn10","2020.1.20"],["ocUyfyvQtAY","2020.1.13"],["_X9lfX1mTMo","2020.1.12"],["4ml_deuI-tY","2020.1.10"],["uOo8pCD5n8g","2020.1.8"],["jq9P2GaOJOM","2020.1.6"],["o0mKFn-8G6c","2020.1.4"],["1_l7aH4CWQw","2020.1.2"],["BQG2XoX8Gis","Best of 2019"],["Mgw5ygUinis","2019.12.30"],["TG7iSqOmLfw","2019.12.28"],["yonkMRbuYpo","B-ball 2019.12.22"],["srLO9pWPsr4","FIFA 20"],["AwLuD_CdPO8","AC syndicate brutal kill compilation"],["b8SgTjpYc-0","b-ball 12.17.19"],["NeAzPFhlQ0Q","B-ball 12.15.19"],["xBEuq0SmON4","fifa 20 skill moves"],["LQgbsbxb23g","b-ball 12.10.19"],["Abh9gnz-ipU","b-ball 12.7.2019"],["XMtoFGncvKE","Unity"],["uNBEYe02IFc","b-ball 12.3.2019"],["iQo_VRB2fGI","b-ball 11.30.19"],["B7BWWIh_OY8","FIFA 20_20191202053235"],["ZShMxkzGbI4","琵琶湖大花火大会 8/8"],["ruKT87GiWSs","2k19  comp"],["IKMBU63wyMs","2k19 atl"],["5UoKdrbCDWI","2k19 lake show"],["JMHD3ODyGKA","2k19 okc"],["P_1yyp-MNyY","2k18"],["EvNK3J0ts7k","NBA2K18 cavs vs celtics"],["hNMl4rvigXc","2k19 greel freak"],["nLQ8UcsJWGo","16ヶ月"],["R2EPQBz-bgc","What are you doing in New year's Eve"],["Au8wIRiaUbQ","January 6, 2019"],["9hPIu2JgU3M","January 5, 2019"],["BVp8NZiAnXE","nba2k19"],["fShrFjZJfcw","NBA2k19"],["-VlrIzPkbL0","No one knows me like the piano in my mother's home"],["K7KjA9KuXkY","リメンバーミー"],["tg4s8bkaiVg","Remember me"],["a52jQCHPFY8","ピアノ"],["CFWdAlR5NLk","My Movie 96"],["LTJYqv_BwSQ","ukulele"],["C0Ss3mQYfQo","my fav cat2"],["hful8iO6Aew","聲の形レビュー　chris stuckman 翻訳"],["IsgonInQj8w","友ヶ島　2018/8/21"],["aJZ1a_4ynG0","my fav cat 5"],["Ifyq5SdW5pg","my fav cat 4"],["gJMwOodhhCA","my fav cat 3"],["PamUUXOOgd0","oct,17,16"],["eZiWcxs2cVc","夢見月に何想ふ/RADWIMPS 　歌ってみた/弾いてみた　akai mpk mini mk2"],["jn8bvGK2tHc","YOUNG&DUMB,BANK ACOUNT AND BODAK YELLOW akai mpki mini mk2 cover"],["tCzP42wVFsY","girls like you"],["_B21TUwhHtk","Girls Like You[Lyrics]/walk off the earth"],["7Xul_u1kfCE","You say it's good I say it's great but it could be better"],["NRC2NU53v-A","Why/Bazzi akai mpk mini mk2 cover"],["KovD0Xw6YlQ","Psycho,God's plan,and Look alive/akai mpk mini2"],["dx2aAM93A0g","congratulation"],["Sdita-IS_GY","OTW,SAD!,and We Belong Together cover by nisino25 /Akai mpk mini2"],["kylc2N4jRP0","HAVANA/akai MPK mini"],["JwqoYRi2CWM","Love yourself cover by nisino25 akai mpk mini2"],["WpzJaCOgp_4","13rw edit"],["RdrhOw4vR0I","Turbo league"],["vN3W3V3WQDE","My first ever cat"],["_QvlC6ZmYc8","Casey Neistat drone montage"],["2WwZLF80MlA","Lamelo Ball challenge"],["t1527B_he2k","児童館バスケ"],["iapRLLyhr78","Hell yeah"],["yKqNn-2Lza0","旭山記念公園へ"],["i3_O8E6njsE","NBA2K17 mobile app game6 3pt game winner!"],["qtkpUqg0324","旭山記念公園からの札幌の朝日のタイムラプス/Timelapse of Sapporo's sunrise from Asahiyama Kinenkouen"],["JhULuNmdTPE","NBA2K17 mobile app game7 we were so close though"],["ByNdkQjVik4","NBA2K17 All Star Game!"],["5IT2cUGJawY","Sunrise Timelapse in Sapporo!"],["rFR3ha_uWuQ","NBA2K17 mobile app crazy game winners !!"],["BtqYOTW8WsA","NBA2K17 mobile app crazy game winner by Kyrie Irving!!"],["sXr_Ga2cnv0","NBA2K17 mobile app NBA final game6"],["HfgPgjDhdG0","Here is my cutest kitten😊"],["ZKwclsvnxrU","NBA2K17 mobile app 300pts challenge by Kyrie Irving!"],["I0NWhgBgUQE","NBA2K17 mobile app My Player!!"],["Fs1pjiEEmqg","timelapse in Kyoto"],["kh--b5YtzU8","NBA2K17 mobile app Black Top"],["-5-DxxIY3Oc","NBA2K17 mobile app   Celtics did amazing come back from 1-3 lead!!!!"],["JDP2tSTF0mc","NBA2K17 mobile GSW vs CLE CRAZY ENDING!!!"],["jgG8g3gENk0","NBA2K17 ALL STAR mobile"],["OE_4ZkAsfsc","NBA 2K17 mobile app 1on1"],["meIQqj-R_cY","Time lapse in Zenibako beach"],["UJpAI7nweQ0","Having fun with these boys. IT WAS LIT🔥"],["aRncxFpNbE4","1 on1"],["oj2VD7rgd_8","Isiah Thomas Highlight"],["IG5unyas8r4","Final Quarter of NBA FINAL!!!"],["1ADopHDlUq8","Game winner by IT4!!!"],["F7SEKonG0VQ","ボクノート"],["GQFYjHbnXno","瞳を閉じて"]
+  ];
+
+  // Upload dates from YouTube (JST), display only.
+  const RELEASED = {
+    "-5-DxxIY3Oc": "2017-09-06",
+    "-S3pC9Tf_CE": "2024-05-28",
+    "-VlrIzPkbL0": "2018-12-09",
+    "0128Lk-6-kE": "2024-12-16",
+    "0aWT9V2v3SI": "2025-05-05",
+    "0cJd3bOjBfI": "2026-10-31",
+    "0qUYWjwIUhI": "2025-08-25",
+    "1ADopHDlUq8": "2017-05-27",
+    "1_l7aH4CWQw": "2020-01-03",
+    "1aUlneFmMbc": "2024-05-19",
+    "1gipVCZ2Qeg": "2020-01-23",
+    "1qA4NR4HgZ0": "2023-07-17",
+    "2L8zslof95s": "2020-05-07",
+    "2VQILDwubRk": "2024-09-13",
+    "2WwZLF80MlA": "2017-10-20",
+    "2blICpANME8": "2024-06-22",
+    "2fmQWTfbJVY": "2024-05-18",
+    "3ABY9GC1vxY": "2024-12-11",
+    "3nGMU6_-j0Y": "2020-03-05",
+    "40cvTaOjGZE": "2020-04-01",
+    "4ACoNIKQYwo": "2020-05-04",
+    "4CtlUSs5YqQ": "2024-04-30",
+    "4UYkSr8WdnU": "2026-07-11",
+    "4XPt-02fQNg": "2023-09-04",
+    "4jg_uZHyjS0": "2022-11-15",
+    "4ml_deuI-tY": "2020-01-11",
+    "4nr8MKGtOaQ": "2020-07-09",
+    "51RAsjltUNQ": "2021-03-25",
+    "59cGFalIaeQ": "2025-05-27",
+    "5HTSlFznhu0": "2020-05-12",
+    "5IT2cUGJawY": "2017-09-11",
+    "5LrCl4-s4p4": "2020-12-04",
+    "5UoKdrbCDWI": "2019-01-20",
+    "5xAfbECN7QI": "2024-02-11",
+    "6Bh_Bmo9-fY": "2023-06-08",
+    "6LOjun3_JUs": "2020-03-12",
+    "6QA0yBz2I0E": "2020-01-27",
+    "6a2vUXAkjaU": "2026-06-04",
+    "7M7tj7EQFEw": "2024-02-16",
+    "7NApvq5s1Ks": "2025-04-22",
+    "7SAqi8K1JtQ": "2025-01-03",
+    "7Xul_u1kfCE": "2018-07-04",
+    "7mz-JntGP5A": "2023-11-19",
+    "80Ulk03KsjQ": "2023-06-25",
+    "8B46RNTHoF0": "2023-10-16",
+    "8IdnvwzeEVw": "2026-09-11",
+    "8LdZOxu8Sqw": "2024-02-11",
+    "8Nq3579N9yA": "2023-08-21",
+    "8dZ_GiL1PQY": "2020-05-10",
+    "8jpuzFjQzsQ": "2020-02-03",
+    "8vpNYECI0Cs": "2025-04-23",
+    "92T4JxVopAM": "2020-03-16",
+    "9hPIu2JgU3M": "2019-01-05",
+    "9iiTp9wf4JU": "2020-05-20",
+    "9uDx_X6yb0M": "2020-03-15",
+    "AERbMX3TKdw": "2025-04-08",
+    "AR3wupLdyCI": "2025-08-21",
+    "ARS513lvu14": "2024-11-04",
+    "Abh9gnz-ipU": "2019-12-09",
+    "Ahc6g4z2IFE": "2021-03-25",
+    "Au8wIRiaUbQ": "2019-01-07",
+    "AwLuD_CdPO8": "2019-12-20",
+    "Azj1GJp5TCc": "2025-01-03",
+    "B3sTfErht40": "2020-08-28",
+    "B3zVUvKu7tM": "2020-08-22",
+    "B7BWWIh_OY8": "2019-12-02",
+    "BBoCSEfVFVQ": "2024-08-03",
+    "BQG2XoX8Gis": "2019-12-31",
+    "BVp8NZiAnXE": "2018-12-31",
+    "BrnUtSSa-1M": "2026-11-09",
+    "BtqYOTW8WsA": "2017-09-10",
+    "ByNdkQjVik4": "2017-09-11",
+    "C0Ss3mQYfQo": "2018-10-23",
+    "C10zSR6mufI": "2022-08-03",
+    "CFWdAlR5NLk": "2018-11-05",
+    "CkHo0lUxFXk": "2020-02-17",
+    "ClvWqEJ9w6w": "2021-12-01",
+    "D_QPKhYlhf4": "2020-01-26",
+    "Dl8ng9tjsd0": "2023-11-26",
+    "DolGS588RZk": "2023-08-16",
+    "E2vjhWJHicQ": "2021-02-26",
+    "E5wTFqyinBo": "2020-03-06",
+    "EryXyHPddyA": "2024-06-20",
+    "EvNK3J0ts7k": "2019-01-19",
+    "Evc06pAwSiA": "2024-04-15",
+    "F7SEKonG0VQ": "2017-01-22",
+    "F8zBsxNEhR0": "2022-06-30",
+    "FGRtSCZ9KAY": "2024-02-22",
+    "FKQivJD2yfc": "2023-08-21",
+    "FLSlJFGjIBg": "2026-09-25",
+    "FOL2tGxmn10": "2020-01-20",
+    "Fs1pjiEEmqg": "2017-09-07",
+    "G-mcYwq9-s4": "2023-10-18",
+    "GQFYjHbnXno": "2015-03-08",
+    "GRcrk9xNNGI": "2025-03-11",
+    "GdiGLu54ix0": "2024-09-19",
+    "GkNh4tEaZuY": "2021-07-11",
+    "HSlJ_LyYfQ8": "2023-11-03",
+    "HfgPgjDhdG0": "2017-09-10",
+    "HvCl3sxBC80": "2026-07-02",
+    "I0NWhgBgUQE": "2017-09-08",
+    "I5xORWrwjF4": "2020-04-30",
+    "IG5unyas8r4": "2017-05-27",
+    "IKMBU63wyMs": "2019-01-23",
+    "IPB8MzVaX0Y": "2025-04-23",
+    "Ifyq5SdW5pg": "2018-08-02",
+    "IrkH3AazPk4": "2025-08-19",
+    "IsgonInQj8w": "2018-08-22",
+    "J4c205i41Ug": "2025-05-27",
+    "JAL19Vxkjuo": "2024-06-23",
+    "JDP2tSTF0mc": "2017-09-06",
+    "JH9bJFYPvuc": "2020-02-15",
+    "JJFLePgvwLc": "2026-07-02",
+    "JMHD3ODyGKA": "2019-01-20",
+    "JhULuNmdTPE": "2017-09-16",
+    "JkWwtrmc_1o": "2023-10-21",
+    "JwqoYRi2CWM": "2018-06-16",
+    "K7KjA9KuXkY": "2018-12-09",
+    "KCyRpjkXZ-U": "2020-09-03",
+    "KF8ZQh_PJYA": "2023-08-04",
+    "KfhHrxT-iNk": "2024-02-18",
+    "KmdKf84L4As": "2026-10-15",
+    "KmepzAnYwi0": "2023-12-01",
+    "KovD0Xw6YlQ": "2018-07-03",
+    "LQgbsbxb23g": "2019-12-11",
+    "LRg7ESxwrsI": "2022-12-01",
+    "LTJYqv_BwSQ": "2018-10-29",
+    "LmvaYeVr97E": "2022-10-30",
+    "LwhVwg11A3M": "2024-09-19",
+    "MD7PIwDXMFk": "2020-10-30",
+    "MQdfWv6qkFY": "2020-06-24",
+    "Mgw5ygUinis": "2019-12-31",
+    "NLm9uBp-Vyw": "2026-07-09",
+    "NRC2NU53v-A": "2018-07-03",
+    "N_q-h7AwTnU": "2021-06-10",
+    "NeAzPFhlQ0Q": "2019-12-15",
+    "NyLKLnFWmYA": "2024-02-18",
+    "OE_4ZkAsfsc": "2017-09-06",
+    "OHdWXezn_5U": "2026-10-31",
+    "P7cACMa0E_8": "2024-03-21",
+    "PTPRmxt9fcM": "2020-05-16",
+    "P_1yyp-MNyY": "2019-01-19",
+    "PamUUXOOgd0": "2018-07-31",
+    "Pu-N9qvkEj8": "2020-03-22",
+    "PzU3fJmq3V0": "2021-12-01",
+    "QUl8kkVCvRQ": "2024-10-23",
+    "R04Cu6gpe0U": "2023-09-12",
+    "R2EPQBz-bgc": "2019-01-07",
+    "RVPbqiqNxTQ": "2020-01-28",
+    "RZv13i2bsAY": "2026-07-02",
+    "RdrhOw4vR0I": "2018-03-04",
+    "SA2vqNBOhNw": "2026-07-19",
+    "SRYnXyIQ3Ig": "2024-03-20",
+    "SWo5rLSfp2I": "2020-07-31",
+    "Sdita-IS_GY": "2018-06-28",
+    "SropntfQvvA": "2021-09-30",
+    "SxTOzd3VhoE": "2020-07-30",
+    "T3C7X-tSb-I": "2022-09-20",
+    "TG7iSqOmLfw": "2019-12-31",
+    "UJpAI7nweQ0": "2017-09-04",
+    "UNTDpm9INDM": "2022-12-18",
+    "UWzjOxG3VS8": "2026-07-25",
+    "UiuYPsdjewA": "2024-11-02",
+    "Uw1CcplcZuw": "2020-02-12",
+    "UzcbzRzJIu8": "2025-05-25",
+    "VCGBpIjFo6I": "2021-07-08",
+    "VTn4NhGYqfA": "2020-07-24",
+    "Vf3MfdPo-2U": "2023-08-05",
+    "VfrFrXZtg6A": "2024-02-27",
+    "W3ffa9F7F3Q": "2020-02-01",
+    "W8_gizLq4l8": "2024-11-11",
+    "WFjU5kw13mo": "2024-07-27",
+    "WG4np-SfSVc": "2023-07-09",
+    "WUBYXtqebyo": "2022-06-27",
+    "WpzJaCOgp_4": "2018-03-07",
+    "XK-BAhmNGaw": "2024-01-12",
+    "XMtoFGncvKE": "2019-12-05",
+    "XbnyjIquCQA": "2021-12-11",
+    "XlFEmbL7Aq0": "2025-05-25",
+    "XsgDvZqhNYU": "2026-11-08",
+    "Y1ur7SWvWVs": "2023-01-04",
+    "Y8ifdp-qrv4": "2020-07-17",
+    "YFPkiSuEnc8": "2023-06-18",
+    "YHPzpEzsEAE": "2020-05-18",
+    "Yf6BMeqN_aI": "2021-02-17",
+    "ZHolvDhbL1s": "2026-05-06",
+    "ZKwclsvnxrU": "2017-09-08",
+    "ZShMxkzGbI4": "2019-08-11",
+    "ZVXO8M1gVJs": "2020-03-09",
+    "ZbdHTx6EQ34": "2021-07-05",
+    "ZdKitCo-C40": "2020-08-12",
+    "Zm-vDU1j7_k": "2020-02-10",
+    "_8BGITjEC9Q": "2024-03-13",
+    "_B21TUwhHtk": "2018-07-11",
+    "_QvlC6ZmYc8": "2017-12-03",
+    "_X9lfX1mTMo": "2020-01-13",
+    "__Jz1J9c2j0": "2020-03-01",
+    "a52jQCHPFY8": "2018-11-10",
+    "a9E0bXXAJgE": "2024-09-19",
+    "aBKog8OL8ws": "2020-02-24",
+    "aJZ1a_4ynG0": "2018-08-02",
+    "aRncxFpNbE4": "2017-09-04",
+    "ait_DSDOhBE": "2024-06-20",
+    "aolTN8a3sgI": "2024-03-03",
+    "b8SgTjpYc-0": "2019-12-18",
+    "bND0soRexCU": "2021-11-24",
+    "bdYxky8hCGg": "2026-07-23",
+    "beNfgNveEmE": "2020-02-27",
+    "bz-n-Ta2kEA": "2020-05-01",
+    "cLn8mVVd9KI": "2024-10-05",
+    "cWRkqovT7TA": "2025-08-14",
+    "cYGczteH56A": "2021-03-04",
+    "d7QMT3VJ8HE": "2024-07-25",
+    "dMB5MaL_aHE": "2024-02-14",
+    "dPj6ch4sD9k": "2023-06-25",
+    "diIBfHQPFG8": "2023-07-31",
+    "dx2aAM93A0g": "2018-06-28",
+    "e03aDE6uEsk": "2025-09-26",
+    "e8ash1Heq8s": "2024-11-12",
+    "eDY66HqKheE": "2025-05-31",
+    "eEuS_Ein7Yc": "2020-02-22",
+    "eZiWcxs2cVc": "2018-07-17",
+    "ehXoay_lkXo": "2025-09-26",
+    "enbxiade1M8": "2024-11-09",
+    "f1sp0HjM5v4": "2022-06-29",
+    "fAQII8WEgpY": "2022-05-25",
+    "fE4_fGrtU10": "2026-06-09",
+    "fPwgyFcsN8E": "2024-12-11",
+    "fShrFjZJfcw": "2018-12-28",
+    "fVwCPSEQjR8": "2024-03-05",
+    "foJeLfhIFuk": "2026-10-31",
+    "fqtlgRIAJM4": "2020-07-03",
+    "gInqMU5wZGk": "2023-06-25",
+    "gJMwOodhhCA": "2018-08-02",
+    "gRstFN0NI4k": "2024-12-11",
+    "gVDmJgcDrGk": "2024-03-11",
+    "gXs1s14IDKE": "2023-10-27",
+    "grEJGLoY3Lo": "2024-10-05",
+    "h-fT9xdp_2Y": "2026-07-20",
+    "h0npmYdl4fs": "2022-07-03",
+    "hBnISeBKTEU": "2024-03-03",
+    "hIH0bXVDlHo": "2024-12-11",
+    "hNMl4rvigXc": "2019-01-15",
+    "hSkyzTlUlL8": "2024-11-01",
+    "hful8iO6Aew": "2018-10-23",
+    "hsT-Xgo1Tfg": "2024-01-16",
+    "i3_O8E6njsE": "2017-09-17",
+    "iQo_VRB2fGI": "2019-12-02",
+    "iZVGl9OSdCc": "2022-07-24",
+    "iapRLLyhr78": "2017-10-10",
+    "ihWUZ-i_i-Q": "2026-07-19",
+    "ixqD-IFedhQ": "2020-09-19",
+    "j2lYXDcDu9I": "2024-08-03",
+    "jJ7QmBDbX0U": "2024-01-11",
+    "jKrFUN0SDwg": "2023-12-17",
+    "jgG8g3gENk0": "2017-09-06",
+    "jn8bvGK2tHc": "2018-07-13",
+    "jq9P2GaOJOM": "2020-01-07",
+    "k-uJUqi7QtM": "2020-03-10",
+    "k_5Bc9pOHDc": "2026-11-12",
+    "kbD7HDuYIcU": "2024-08-24",
+    "kh--b5YtzU8": "2017-09-06",
+    "knaAai_0eFQ": "2023-06-29",
+    "kqCGa4g50Y8": "2020-10-26",
+    "kylc2N4jRP0": "2018-06-20",
+    "lqZJXZcoJ4o": "2024-11-08",
+    "lxS_C7rTR9k": "2024-05-18",
+    "mNXaHSusdRc": "2024-03-18",
+    "meIQqj-R_cY": "2017-09-04",
+    "moUjpLxoUyg": "2020-03-05",
+    "mwJMYEaJ2go": "2020-07-07",
+    "n2A6h_WD-90": "2024-05-28",
+    "nKVbwJKiPC0": "2020-02-19",
+    "nLQ8UcsJWGo": "2019-01-12",
+    "nQV_pYEeRjY": "2024-12-02",
+    "nS4WchZ7cq4": "2024-01-28",
+    "nfiSwqt3Dz4": "2025-04-23",
+    "nkvLe_Hn4k0": "2020-08-12",
+    "o0mKFn-8G6c": "2020-01-05",
+    "ocUyfyvQtAY": "2020-01-14",
+    "ofe1Tj5igVc": "2020-02-20",
+    "oj2VD7rgd_8": "2017-09-04",
+    "ojTeaf_YpY8": "2022-11-14",
+    "pE1j931wEZ0": "2024-10-05",
+    "pJJzTuxYzBY": "2020-01-29",
+    "pYJoCx1ZBKY": "2025-06-29",
+    "pk1Q0tC_ScI": "2020-11-03",
+    "plLEj3RVD8g": "2026-09-11",
+    "qApGbd4nkU8": "2024-04-16",
+    "qBhRZNk33SQ": "2020-05-14",
+    "qNjz48UepzQ": "2020-07-27",
+    "qtkpUqg0324": "2017-09-17",
+    "qzZNmaxi5jU": "2025-05-27",
+    "rFR3ha_uWuQ": "2017-09-10",
+    "rNUcJNrV-7Y": "2024-12-11",
+    "rSpEFitTayk": "2023-10-03",
+    "rnS39A6iN94": "2024-03-11",
+    "ruKT87GiWSs": "2019-01-27",
+    "rwz4gkc-nDc": "2022-12-18",
+    "rxTaOuXYlBQ": "2020-05-03",
+    "rzKFwP69LOQ": "2024-04-17",
+    "sXr_Ga2cnv0": "2017-09-10",
+    "srLO9pWPsr4": "2019-12-20",
+    "t1527B_he2k": "2017-10-12",
+    "tCzP42wVFsY": "2018-07-11",
+    "tUub6SDd5FU": "2020-08-12",
+    "tg4s8bkaiVg": "2018-12-09",
+    "tjN2-CTK6N0": "2021-12-11",
+    "u8BnfGAUlK0": "2021-06-09",
+    "uNBEYe02IFc": "2019-12-04",
+    "uOo8pCD5n8g": "2020-01-09",
+    "uReZUW8YTY0": "2023-11-19",
+    "uf378sOVf_8": "2020-10-02",
+    "unUa4NIUs3w": "2022-09-20",
+    "v7-CusGfcr4": "2021-03-24",
+    "vN3W3V3WQDE": "2017-12-26",
+    "vRy1Myb1s14": "2020-02-01",
+    "w2F1gqOk4uo": "2024-11-11",
+    "x57v6ool3Jo": "2020-03-01",
+    "xBEuq0SmON4": "2019-12-14",
+    "yKqNn-2Lza0": "2017-09-23",
+    "yhN6eOkkyeo": "2026-07-27",
+    "yonkMRbuYpo": "2019-12-23",
+    "z4KKmLnHjjw": "2025-04-30",
+    "z7h_1-T9Zso": "2024-06-23",
+    "z951Yn5AUcs": "2026-07-29",
+    "zIQT_UdL8PI": "2024-05-28",
+    "zXcvIEHh-Fw": "2025-02-02",
+    "z_7Bh4t-6nU": "2025-11-08",
+    "zyq_slhN-B4": "2023-11-26"
+  };
+
+  // Filmed dates (yyyy-mm-dd), read from the titles where the title has a full date. Edit them in the Videos tab.
+  const FILMED = {
+    "0cJd3bOjBfI": "2026-08-12", "UWzjOxG3VS8": "2025-07-04", "h-fT9xdp_2Y": "2025-06-19", "SA2vqNBOhNw": "2025-05-17", "ihWUZ-i_i-Q": "2025-04-30", "HvCl3sxBC80": "2025-12-13", "JJFLePgvwLc": "2025-04-23", "5xAfbECN7QI": "2024-02-09", "8LdZOxu8Sqw": "2024-02-03", "jJ7QmBDbX0U": "2024-01-09", "rSpEFitTayk": "2023-09-30", "8Nq3579N9yA": "2023-08-12", "1qA4NR4HgZ0": "2023-07-16", "uf378sOVf_8": "2020-09-29", "KCyRpjkXZ-U": "2020-09-02", "B3sTfErht40": "2020-08-27", "B3zVUvKu7tM": "2020-08-10", "VTn4NhGYqfA": "2020-07-23", "Pu-N9qvkEj8": "2020-03-21", "92T4JxVopAM": "2020-03-15", "9uDx_X6yb0M": "2020-03-13", "6LOjun3_JUs": "2020-03-11", "k-uJUqi7QtM": "2020-03-09", "ZVXO8M1gVJs": "2020-03-08", "E5wTFqyinBo": "2020-03-04", "moUjpLxoUyg": "2020-03-02", "x57v6ool3Jo": "2020-02-28", "__Jz1J9c2j0": "2020-02-29", "beNfgNveEmE": "2020-02-26", "aBKog8OL8ws": "2020-02-23", "eEuS_Ein7Yc": "2020-02-21", "ofe1Tj5igVc": "2020-02-19", "CkHo0lUxFXk": "2020-02-16", "JH9bJFYPvuc": "2020-02-14", "Uw1CcplcZuw": "2020-02-12", "Zm-vDU1j7_k": "2020-02-08", "8jpuzFjQzsQ": "2020-02-02", "W3ffa9F7F3Q": "2020-01-31", "RVPbqiqNxTQ": "2020-01-27", "D_QPKhYlhf4": "2020-01-25", "1gipVCZ2Qeg": "2020-01-22", "FOL2tGxmn10": "2020-01-20", "ocUyfyvQtAY": "2020-01-13", "_X9lfX1mTMo": "2020-01-12", "4ml_deuI-tY": "2020-01-10", "uOo8pCD5n8g": "2020-01-08", "jq9P2GaOJOM": "2020-01-06", "o0mKFn-8G6c": "2020-01-04", "1_l7aH4CWQw": "2020-01-02", "Mgw5ygUinis": "2019-12-30", "TG7iSqOmLfw": "2019-12-28", "yonkMRbuYpo": "2019-12-22", "b8SgTjpYc-0": "2019-12-17", "NeAzPFhlQ0Q": "2019-12-15", "LQgbsbxb23g": "2019-12-10", "Abh9gnz-ipU": "2019-12-07", "uNBEYe02IFc": "2019-12-03", "iQo_VRB2fGI": "2019-11-30", "Au8wIRiaUbQ": "2019-01-06", "9hPIu2JgU3M": "2019-01-05", "IsgonInQj8w": "2018-08-21", "cYGczteH56A": "2021-03-03", "5LrCl4-s4p4": "2020-12-02", "pk1Q0tC_ScI": "2020-11-02", "MD7PIwDXMFk": "2020-10-29", "kqCGa4g50Y8": "2020-10-20", "ixqD-IFedhQ": "2020-09-09",
+    "qzZNmaxi5jU": "2025-03-26", "XsgDvZqhNYU": "2026-10-25", "foJeLfhIFuk": "2026-07-28", "J4c205i41Ug": "2025-03-20", "eDY66HqKheE": "2025-04-13", "4UYkSr8WdnU": "2026-05-17", "FLSlJFGjIBg": "2026-09-23", "OHdWXezn_5U": "2026-09-14", "bdYxky8hCGg": "2026-07-10", "z4KKmLnHjjw": "2025-01-29", "59cGFalIaeQ": "2025-03-13", "UzcbzRzJIu8": "2025-02-19", "7NApvq5s1Ks": "2025-04-19", "XlFEmbL7Aq0": "2025-02-08", "GRcrk9xNNGI": "2024-11-27", "nfiSwqt3Dz4": "2025-01-01", "rNUcJNrV-7Y": "2024-10-24", "e8ash1Heq8s": "2024-09-15", "nQV_pYEeRjY": "2024-09-07", "W8_gizLq4l8": "2024-08-25", "0128Lk-6-kE": "2024-11-09", "fPwgyFcsN8E": "2024-10-27", "hIH0bXVDlHo": "2024-10-13", "3ABY9GC1vxY": "2024-10-06", "w2F1gqOk4uo": "2024-09-04", "gRstFN0NI4k": "2024-11-04", "QUl8kkVCvRQ": "2024-07-12", "2VQILDwubRk": "2024-06-20", "cLn8mVVd9KI": "2024-06-22", "grEJGLoY3Lo": "2024-07-01", "pE1j931wEZ0": "2024-10-02", "UiuYPsdjewA": "2024-07-21", "hSkyzTlUlL8": "2024-07-18", "lqZJXZcoJ4o": "2024-08-03", "ARS513lvu14": "2024-07-28", "enbxiade1M8": "2024-08-18", "JAL19Vxkjuo": "2024-05-19", "BBoCSEfVFVQ": "2024-05-30", "2blICpANME8": "2024-05-12", "ait_DSDOhBE": "2024-04-28", "EryXyHPddyA": "2024-05-04", "kbD7HDuYIcU": "2024-06-16", "z7h_1-T9Zso": "2024-05-15", "WFjU5kw13mo": "2024-05-26", "d7QMT3VJ8HE": "2024-05-22", "j2lYXDcDu9I": "2024-06-09", "lxS_C7rTR9k": "2024-04-04", "SRYnXyIQ3Ig": "2024-03-16", "P7cACMa0E_8": "2024-03-20", "1aUlneFmMbc": "2024-04-14", "-S3pC9Tf_CE": "2024-04-19", "2fmQWTfbJVY": "2024-04-07", "Evc06pAwSiA": "2024-03-25", "zIQT_UdL8PI": "2024-04-17", "n2A6h_WD-90": "2024-04-26", "rzKFwP69LOQ": "2024-03-31", "gVDmJgcDrGk": "2024-03-06", "FGRtSCZ9KAY": "2024-02-18", "hBnISeBKTEU": "2024-03-01", "KfhHrxT-iNk": "2024-02-15", "mNXaHSusdRc": "2024-03-10", "NyLKLnFWmYA": "2024-02-12", "_8BGITjEC9Q": "2024-03-08", "VfrFrXZtg6A": "2024-02-24", "rnS39A6iN94": "2024-03-03", "aolTN8a3sgI": "2024-02-29", "diIBfHQPFG8": "2023-07-29", "hsT-Xgo1Tfg": "2024-01-14", "nS4WchZ7cq4": "2024-01-26", "JkWwtrmc_1o": "2023-10-14", "Vf3MfdPo-2U": "2023-08-04", "Dl8ng9tjsd0": "2023-11-03", "gXs1s14IDKE": "2023-10-22", "zyq_slhN-B4": "2023-11-26", "FKQivJD2yfc": "2023-08-19", "7M7tj7EQFEw": "2024-02-11", "ZdKitCo-C40": "2020-08-05", "nkvLe_Hn4k0": "2020-08-10", "tUub6SDd5FU": "2020-07-31", "6Bh_Bmo9-fY": "2023-06-04"
+  };
+
+  // Titles matching these are guessed as "not basketball" (games, music, other) — you can flip them back.
+  const GAME_RE = /2k|fifa|ps[45]|pubg|\brdr|\bcrew\b|just cause|ghost of|one piece|lego|unity|akai|cover|\bcats?\b|kitten|piano|ピアノ|ukulele|movie|drone|smash|nba ?\d|nba2k|random|lyrics|\brun\b|cardio|草むしり|ボクノート|瞳|リメンバー|聲|夢見月|花火|turbo|time ?lapse|sunrise|sakura|\bedit\b|girls like|bodak|remember me|carrer|carrerre|did i kill|ac syndicate|congratulation|\bcomp\b|16ヶ月|友ヶ島|^my fav/i;
+
+  // Spots you can pick from in Map > Edit mode. Coordinates are from OpenStreetMap; "click map" ones are placed by clicking.
+  const SPOTS = [
+    { id: 'shinjuku', name: '新宿中央公園', lat: 35.690029, lng: 139.689585 },
+    { id: 'yoyogi',   name: '代々木公園', lat: 35.671405, lng: 139.695172 },
+    { id: 'meguro',   name: '目黒区民センター体育館', lat: 35.635744, lng: 139.708260 },
+    { id: 'buddy',    name: 'BUDDYスポーツアリーナ（有明）', lat: 35.637039, lng: 139.781082 },
+    { id: 'wings',    name: 'ウィングス京都', lat: 35.018257, lng: 135.740145 },
+    { id: 'nakagyo',  name: '京都市中京地域体育館', lat: null, lng: null },
+    { id: 'pearl',    name: '24 Hour Fitness (Pearl District, Portland)', lat: 45.528284, lng: -122.683843 },
+    { id: 'northpark', name: 'North Park Blocks (Portland)', lat: 45.524927, lng: -122.679457 },
+    { id: 'caj-higashikurume', name: 'CAJ東久留米', lat: null, lng: null },
+    { id: 'komagome-bunkyo', name: '文京区勤労福祉会館（駒込）', lat: null, lng: null },
+    { id: 'heiwadai', name: '練馬区立平和台体育館', lat: 35.759294, lng: 139.661612 },
+    { id: 'hikarigaoka', name: '光が丘公園', lat: 35.762242, lng: 139.630230 },
+    { id: 'kishine', name: '岸根公園', lat: 35.496110, lng: 139.616779 },
+    { id: 'ikebukuro-jhs', name: '豊島区立 池袋中学校', lat: null, lng: null },
+    { id: 'lake-oswego', name: 'Lake Oswego', lat: 45.420675, lng: -122.670649 },
+    { id: 'round1-hakata', name: 'Round1 博多', lat: 33.583943, lng: 130.438238 },
+    { id: 'higashiyama-gym', name: '東山地域体育館（京都）', lat: null, lng: null },
+    { id: 'hidden-creek', name: 'Hidden Creek Community Center (Hillsboro)', lat: 45.523556, lng: -122.930708 },
+    { id: 'beaverton', name: '24 Hour Fitness (Beaverton)', lat: 45.439066, lng: -122.829637 },
+    { id: 'fushimi-hokubu', name: '伏見北部地域体育館', lat: null, lng: null },
+    { id: 'higashiyama-ikiiki', name: '京都市東山いきいき市民活動センター', lat: 35.007862, lng: 135.776674 },
+    { id: 'fukushima-sports', name: '福島スポーツセンター（大阪）', lat: 34.691621, lng: 135.473106 },
+    { id: 'nishimiya-nosawa', name: '西宮の沢公園（札幌）', lat: 43.101135, lng: 141.261362 },
+    { id: 'sapporo-nishino', name: '札幌市西野児童会館', lat: 43.065840, lng: 141.271393 },
+    { id: 'sapporo-heiwa', name: '札幌市平和児童会館', lat: 43.059418, lng: 141.256102 },
+    { id: 'hirakata-koen', name: '枚方公園（大阪）', lat: 34.811404, lng: 135.639370 },
+    { id: 'minatonomori', name: 'みなとのもり公園（神戸）', lat: null, lng: null },
+    { id: 'sennan-long', name: '泉南ロングパーク（大阪、和歌山？）', lat: null, lng: null },
+    { id: 'ojigaoka-shiga', name: '皇子が丘公園（滋賀）', lat: null, lng: null },
+    { id: 'ahara-park', name: '安良波公園', lat: 26.303900, lng: 127.758917 },
+    { id: 'hos-sumiyoshi', name: 'HOS住吉スポーツセンター（大阪）', lat: 34.591999, lng: 135.511559 },
+    { id: 'uji-minami-jhs', name: '宇治市立南宇治中学校', lat: null, lng: null },
+    { id: 'ryokyo-nagoya', name: '露橋公園（名古屋）', lat: 35.148998, lng: 136.886835 },
+    { id: 'suma-kaihin', name: '須磨海浜公園（神戸）', lat: 34.647107, lng: 135.126682 },
+    { id: 'nojiriko', name: '野尻湖（長野）', lat: 36.825345, lng: 138.218077 },
+    { id: 'shimogyo-gym', name: '下京地域体育館（京都）', lat: null, lng: null },
+    { id: 'wallace-park', name: 'Wallace Park (Portland)', lat: 45.533258, lng: -122.703876 },
+    { id: 'takatori', name: '鷹取（兵庫）', lat: null, lng: null },
+    { id: 'tennoji-sports', name: '大阪市立天王寺スポーツセンター', lat: 34.670913, lng: 135.528585 },
+  ];
+
+  // country and city for each spot id (used to group the location badges)
+  const SPOT_AREA = {
+    'shinjuku': ['日本', '東京'], 'yoyogi': ['日本', '東京'], 'meguro': ['日本', '東京'], 'buddy': ['日本', '東京'],
+    'caj-higashikurume': ['日本', '東京'], 'komagome-bunkyo': ['日本', '東京'], 'heiwadai': ['日本', '東京'],
+    'hikarigaoka': ['日本', '東京'], 'ikebukuro-jhs': ['日本', '東京'],
+    'wings': ['日本', '京都'], 'nakagyo': ['日本', '京都'], 'higashiyama-gym': ['日本', '京都'],
+    'fushimi-hokubu': ['日本', '京都'], 'higashiyama-ikiiki': ['日本', '京都'],
+    'kishine': ['日本', '横浜'], 'round1-hakata': ['日本', '福岡'],
+    'fukushima-sports': ['日本', '大阪'], 'hirakata-koen': ['日本', '大阪'], 'sennan-long': ['日本', '大阪'],
+    'nishimiya-nosawa': ['日本', '札幌'], 'sapporo-nishino': ['日本', '札幌'], 'sapporo-heiwa': ['日本', '札幌'],
+    'minatonomori': ['日本', '神戸'], 'ojigaoka-shiga': ['日本', '滋賀'],
+    'pearl': ['アメリカ', 'Portland'], 'northpark': ['アメリカ', 'Portland'],
+    'lake-oswego': ['アメリカ', 'Lake Oswego'], 'hidden-creek': ['アメリカ', 'Hillsboro'], 'beaverton': ['アメリカ', 'Beaverton'],
+    'ahara-park': ['日本', '北谷'], 'hos-sumiyoshi': ['日本', '大阪'], 'uji-minami-jhs': ['日本', '宇治'],
+    'ryokyo-nagoya': ['日本', '名古屋'], 'suma-kaihin': ['日本', '神戸'], 'nojiriko': ['日本', '長野'],
+    'shimogyo-gym': ['日本', '京都'], 'wallace-park': ['アメリカ', 'Portland'],
+    'takatori': ['日本', '神戸'], 'tennoji-sports': ['日本', '大阪'],
+  };
+
+  // short map labels where the full spot name would repeat (e.g. several "Portland" spots)
+  const SPOT_SHORT = {
+    'pearl': 'Pearl District', 'northpark': 'North Park', 'beaverton': 'Beaverton',
+    'wallace-park': 'Wallace Park', 'lake-oswego': 'Lake Oswego', 'hidden-creek': 'Hidden Creek',
+  };
+
+  const STORE_KEY = 'basketball-tracker-v1';
+  const KINDS = [
+    { id: 'basketball', label: '🏀 Basketball' },
+    { id: 'unsorted',   label: '? Unsorted' },
+    { id: 'other',      label: '✕ Not basketball' },
+  ];
+
+  const { createApp, reactive, ref, computed, watch, onMounted, nextTick } = Vue;
+
+  const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const thumb = id => `https://i.ytimg.com/vi/${id}/mqdefault.jpg`;
+  const ytUrl = id => `https://www.youtube.com/watch?v=${id}`;
+
+  createApp({
+    setup() {
+      // ---- load saved state, merged onto the seed list (so new videos still show up)
+      // data saved from the author's copy; used on first visit (before anything is saved in this browser)
+      const EMBEDDED_STATE = {"videos": [{"id": "RZv13i2bsAY", "title": "Shinjuku bball", "kind": "basketball", "loc": {"spotId": "shinjuku", "name": "新宿中央公園", "lat": 35.690029, "lng": 139.689585}, "likes": [], "filmed": "2026-05-16", "dateOk": true}, {"id": "k_5Bc9pOHDc", "title": "FC25 1", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "BrnUtSSa-1M", "title": "smash 2025 1,2", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "XsgDvZqhNYU", "title": "1025 目黒", "kind": "basketball", "loc": {"spotId": "shinjuku", "name": "新宿中央公園", "lat": 35.690029, "lng": 139.689585}, "likes": [], "filmed": "2026-10-25", "dateOk": true}, {"id": "OHdWXezn_5U", "title": "Sep14 CAJjust cardio atp", "kind": "basketball", "loc": {"spotId": "caj-higashikurume", "name": "CAJ東久留米", "lat": null, "lng": null}, "likes": [], "filmed": "2026-09-14", "dateOk": true}, {"id": "0cJd3bOjBfI", "title": "2026 8 12 Nojiriko Run", "kind": "other", "loc": null, "likes": [], "filmed": "2026-08-12", "dateOk": false}, {"id": "foJeLfhIFuk", "title": "0728 komagome", "kind": "basketball", "loc": {"spotId": "komagome-bunkyo", "name": "文京区勤労福祉会館（駒込）", "lat": null, "lng": null}, "likes": [], "filmed": "2026-07-28", "dateOk": true}, {"id": "KmdKf84L4As", "title": "random ps5 clips", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "FLSlJFGjIBg", "title": "0923 目黒", "kind": "basketball", "loc": {"spotId": "meguro", "name": "目黒区民センター体育館", "lat": 35.635744, "lng": 139.70826}, "likes": [], "filmed": "2026-09-23", "dateOk": true}, {"id": "plLEj3RVD8g", "title": "fifa23 last dance", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "8IdnvwzeEVw", "title": "last random ps4 clips", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "z951Yn5AUcs", "title": "FIFA23", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "yhN6eOkkyeo", "title": "random ps4 clips in 2026", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "UWzjOxG3VS8", "title": "2025 0704  平和台", "kind": "basketball", "loc": {"spotId": "heiwadai", "name": "練馬区立平和台体育館", "lat": 35.759294, "lng": 139.661612}, "likes": [], "filmed": "2025-07-04", "dateOk": true}, {"id": "bdYxky8hCGg", "title": "0710 光が丘", "kind": "basketball", "loc": {"spotId": "hikarigaoka", "name": "光が丘公園", "lat": 35.762242, "lng": 139.63023}, "likes": [], "filmed": "2026-07-10", "dateOk": true}, {"id": "h-fT9xdp_2Y", "title": "2025 0619", "kind": "basketball", "loc": {"spotId": "buddy", "name": "BUDDYスポーツアリーナ（有明）", "lat": 35.637039, "lng": 139.781082}, "likes": [], "filmed": "2025-06-19", "dateOk": true}, {"id": "SA2vqNBOhNw", "title": "2025 0517 at CAJ", "kind": "basketball", "loc": {"spotId": "caj-higashikurume", "name": "CAJ東久留米", "lat": null, "lng": null}, "likes": [], "filmed": "2025-05-17", "dateOk": true}, {"id": "ihWUZ-i_i-Q", "title": "2025 0430", "kind": "basketball", "loc": {"spotId": "buddy", "name": "BUDDYスポーツアリーナ（有明）", "lat": 35.637039, "lng": 139.781082}, "likes": [], "filmed": "2025-04-30", "dateOk": true}, {"id": "4UYkSr8WdnU", "title": "0517", "kind": "basketball", "loc": {"spotId": "meguro", "name": "目黒区民センター体育館", "lat": 35.635744, "lng": 139.70826}, "likes": [], "filmed": "2026-05-17", "dateOk": true}, {"id": "NLm9uBp-Vyw", "title": "2k26", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "HvCl3sxBC80", "title": "2025 12 13", "kind": "basketball", "loc": {"spotId": "caj-higashikurume", "name": "CAJ東久留米", "lat": null, "lng": null}, "likes": [], "filmed": "2025-12-13", "dateOk": true}, {"id": "JJFLePgvwLc", "title": "2025 04 23", "kind": "basketball", "loc": {"spotId": "buddy", "name": "BUDDYスポーツアリーナ（有明）", "lat": 35.637039, "lng": 139.781082}, "likes": [], "filmed": "2025-04-23", "dateOk": true}, {"id": "fE4_fGrtU10", "title": "6/2/2027 one piece lego", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "6a2vUXAkjaU", "title": "岸根公園　バスケ", "kind": "basketball", "loc": {"spotId": "kishine", "name": "岸根公園", "lat": 35.49611, "lng": 139.616779}, "likes": [], "filmed": "2026-05-03", "dateOk": true}, {"id": "ZHolvDhbL1s", "title": "草むしり 20260504", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "z_7Bh4t-6nU", "title": "2k25 28 37", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "e03aDE6uEsk", "title": "final fifa20 highlight", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "ehXoay_lkXo", "title": "ps4 2025 summer", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "0qUYWjwIUhI", "title": "2k18 comp", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "AR3wupLdyCI", "title": "2k17 compilation", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "IrkH3AazPk4", "title": "2k25 21- 27", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "cWRkqovT7TA", "title": "2k25 11 20", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "pYJoCx1ZBKY", "title": "2k25 1-10", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "eDY66HqKheE", "title": "0413 Kitaikebukuro", "kind": "basketball", "loc": {"spotId": "ikebukuro-jhs", "name": "豊島区立 池袋中学校", "lat": null, "lng": null}, "likes": [], "filmed": "2025-04-13", "dateOk": true}, {"id": "qzZNmaxi5jU", "title": "0326", "kind": "basketball", "loc": {"spotId": "buddy", "name": "BUDDYスポーツアリーナ（有明）", "lat": 35.637039, "lng": 139.781082}, "likes": [], "filmed": "2025-03-26", "dateOk": true}, {"id": "J4c205i41Ug", "title": "0320", "kind": "basketball", "loc": {"spotId": "buddy", "name": "BUDDYスポーツアリーナ（有明）", "lat": 35.637039, "lng": 139.781082}, "likes": [], "filmed": "2025-03-20", "dateOk": true}, {"id": "59cGFalIaeQ", "title": "0313", "kind": "basketball", "loc": {"spotId": "buddy", "name": "BUDDYスポーツアリーナ（有明）", "lat": 35.637039, "lng": 139.781082}, "likes": [], "filmed": "2025-03-13", "dateOk": true}, {"id": "UzcbzRzJIu8", "title": "0219", "kind": "basketball", "loc": {"spotId": "buddy", "name": "BUDDYスポーツアリーナ（有明）", "lat": 35.637039, "lng": 139.781082}, "likes": [], "filmed": "2025-02-19", "dateOk": true}, {"id": "XlFEmbL7Aq0", "title": "0208 Kita ikebukuro", "kind": "basketball", "loc": {"spotId": "ikebukuro-jhs", "name": "豊島区立 池袋中学校", "lat": null, "lng": null}, "likes": [], "filmed": "2025-02-08", "dateOk": true}, {"id": "0aWT9V2v3SI", "title": "Lake Yamanaka Run 20250504", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "z4KKmLnHjjw", "title": "1 29", "kind": "basketball", "loc": {"spotId": "buddy", "name": "BUDDYスポーツアリーナ（有明）", "lat": 35.637039, "lng": 139.781082}, "likes": [], "filmed": "2025-01-29", "dateOk": true}, {"id": "IPB8MzVaX0Y", "title": "0925 Oregon", "kind": "basketball", "loc": {"spotId": "lake-oswego", "name": "Lake Oswego", "lat": 45.420675, "lng": -122.670649}, "likes": [], "filmed": "2024-09-25", "dateOk": true}, {"id": "nfiSwqt3Dz4", "title": "0101 hakata", "kind": "basketball", "loc": {"spotId": "round1-hakata", "name": "Round1 博多", "lat": 33.583943, "lng": 130.438238}, "likes": [], "filmed": "2025-01-01", "dateOk": true}, {"id": "8vpNYECI0Cs", "title": "1208", "kind": "basketball", "loc": {"spotId": "wings", "name": "ウィングス京都", "lat": 35.018257, "lng": 135.740145}, "likes": [], "filmed": "2024-12-08", "dateOk": true}, {"id": "7NApvq5s1Ks", "title": "4 19 代々木公園", "kind": "basketball", "loc": {"spotId": "yoyogi", "name": "代々木公園", "lat": 35.671405, "lng": 139.695172}, "likes": [], "filmed": "2024-04-19", "dateOk": true}, {"id": "AERbMX3TKdw", "title": "1128", "kind": "basketball", "loc": {"spotId": "nakagyo", "name": "京都市中京地域体育館", "lat": null, "lng": null}, "likes": [], "filmed": "2024-11-28", "dateOk": true}, {"id": "GRcrk9xNNGI", "title": "1127", "kind": "basketball", "loc": {"spotId": "nakagyo", "name": "京都市中京地域体育館", "lat": null, "lng": null}, "likes": [], "filmed": "2024-11-27", "dateOk": true}, {"id": "zXcvIEHh-Fw", "title": "smash bros comp", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "Azj1GJp5TCc", "title": "FIFA20 2024 part2", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "7SAqi8K1JtQ", "title": "random ps4 clips", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "0128Lk-6-kE", "title": "1109", "kind": "basketball", "loc": {"spotId": "nakagyo", "name": "京都市中京地域体育館", "lat": null, "lng": null}, "likes": [], "filmed": "2024-11-09", "dateOk": true}, {"id": "gRstFN0NI4k", "title": "1104", "kind": "basketball", "loc": {"spotId": "nakagyo", "name": "京都市中京地域体育館", "lat": null, "lng": null}, "likes": [], "filmed": "2024-11-04", "dateOk": true}, {"id": "fPwgyFcsN8E", "title": "1027", "kind": "basketball", "loc": {"spotId": "wings", "name": "ウィングス京都", "lat": 35.018257, "lng": 135.740145}, "likes": [], "filmed": "2024-10-27", "dateOk": true}, {"id": "rNUcJNrV-7Y", "title": "1024", "kind": "basketball", "loc": {"spotId": "nakagyo", "name": "京都市中京地域体育館", "lat": null, "lng": null}, "likes": [], "filmed": "2024-10-24", "dateOk": true}, {"id": "hIH0bXVDlHo", "title": "1013", "kind": "basketball", "loc": {"spotId": "wings", "name": "ウィングス京都", "lat": 35.018257, "lng": 135.740145}, "likes": [], "filmed": "2024-10-13", "dateOk": true}, {"id": "3ABY9GC1vxY", "title": "1006", "kind": "basketball", "loc": {"spotId": "wings", "name": "ウィングス京都", "lat": 35.018257, "lng": 135.740145}, "likes": [], "filmed": "2024-10-06", "dateOk": true}, {"id": "nQV_pYEeRjY", "title": "0907", "kind": "basketball", "loc": {"spotId": "nakagyo", "name": "京都市中京地域体育館", "lat": null, "lng": null}, "likes": [], "filmed": "2024-09-07", "dateOk": true}, {"id": "e8ash1Heq8s", "title": "0915", "kind": "basketball", "loc": {"spotId": "wings", "name": "ウィングス京都", "lat": 35.018257, "lng": 135.740145}, "likes": [], "filmed": "2024-09-15", "dateOk": true}, {"id": "W8_gizLq4l8", "title": "0825", "kind": "basketball", "loc": {"spotId": "wings", "name": "ウィングス京都", "lat": 35.018257, "lng": 135.740145}, "likes": [], "filmed": "2024-08-25", "dateOk": true}, {"id": "w2F1gqOk4uo", "title": "0904", "kind": "basketball", "loc": {"spotId": "higashiyama-gym", "name": "東山地域体育館（京都）", "lat": null, "lng": null}, "likes": [], "filmed": "2024-09-04", "dateOk": true}, {"id": "enbxiade1M8", "title": "0818", "kind": "basketball", "loc": {"spotId": "wings", "name": "ウィングス京都", "lat": 35.018257, "lng": 135.740145}, "likes": [], "filmed": "2024-08-18", "dateOk": true}, {"id": "lqZJXZcoJ4o", "title": "0803", "kind": "basketball", "loc": {"spotId": "nakagyo", "name": "京都市中京地域体育館", "lat": null, "lng": null}, "likes": [], "filmed": "2024-08-03", "dateOk": true}, {"id": "ARS513lvu14", "title": "0728", "kind": "basketball", "loc": {"spotId": "wings", "name": "ウィングス京都", "lat": 35.018257, "lng": 135.740145}, "likes": [], "filmed": "2024-07-28", "dateOk": true}, {"id": "UiuYPsdjewA", "title": "0721", "kind": "basketball", "loc": {"spotId": "wings", "name": "ウィングス京都", "lat": 35.018257, "lng": 135.740145}, "likes": [], "filmed": "2024-07-21", "dateOk": true}, {"id": "hSkyzTlUlL8", "title": "0718", "kind": "basketball", "loc": {"spotId": "higashiyama-gym", "name": "東山地域体育館（京都）", "lat": null, "lng": null}, "likes": [], "filmed": "2024-07-18", "dateOk": true}, {"id": "QUl8kkVCvRQ", "title": "0712", "kind": "basketball", "loc": {"spotId": "higashiyama-gym", "name": "東山地域体育館（京都）", "lat": null, "lng": null}, "likes": [], "filmed": "2024-07-12", "dateOk": true}, {"id": "cLn8mVVd9KI", "title": "0622", "kind": "basketball", "loc": {"spotId": "wings", "name": "ウィングス京都", "lat": 35.018257, "lng": 135.740145}, "likes": [], "filmed": "2024-06-22", "dateOk": true}, {"id": "pE1j931wEZ0", "title": "1002 Hillsboro Oregon 🇺🇸", "kind": "basketball", "loc": {"spotId": "hidden-creek", "name": "Hidden Creek Community Center (Hillsboro)", "lat": 45.523556, "lng": -122.930708}, "likes": [], "filmed": "2024-10-02", "dateOk": true}, {"id": "grEJGLoY3Lo", "title": "0701 finished", "kind": "basketball", "loc": {"spotId": "higashiyama-gym", "name": "東山地域体育館（京都）", "lat": null, "lng": null}, "likes": [], "filmed": "2024-07-01", "dateOk": true}, {"id": "a9E0bXXAJgE", "title": "PS4 FIFA20", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "GdiGLu54ix0", "title": "PS4 2k23", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "LwhVwg11A3M", "title": "PS4 randomclips", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "2VQILDwubRk", "title": "0620", "kind": "basketball", "loc": {"spotId": "higashiyama-ikiiki", "name": "京都市東山いきいき市民活動センター", "lat": 35.007862, "lng": 135.776674}, "likes": [], "filmed": "2024-06-20", "dateOk": true}, {"id": "kbD7HDuYIcU", "title": "0616", "kind": "basketball", "loc": {"spotId": "wings", "name": "ウィングス京都", "lat": 35.018257, "lng": 135.740145}, "likes": [], "filmed": "2024-06-16", "dateOk": true}, {"id": "j2lYXDcDu9I", "title": "0609", "kind": "basketball", "loc": {"spotId": "wings", "name": "ウィングス京都", "lat": 35.018257, "lng": 135.740145}, "likes": [], "filmed": "2024-06-09", "dateOk": true}, {"id": "BBoCSEfVFVQ", "title": "0530", "kind": "basketball", "loc": {"spotId": "nakagyo", "name": "京都市中京地域体育館", "lat": null, "lng": null}, "likes": [], "filmed": "2024-05-30", "dateOk": true}, {"id": "WFjU5kw13mo", "title": "0526", "kind": "basketball", "loc": {"spotId": "wings", "name": "ウィングス京都", "lat": 35.018257, "lng": 135.740145}, "likes": [], "filmed": "2024-05-26", "dateOk": true}, {"id": "d7QMT3VJ8HE", "title": "0522", "kind": "basketball", "loc": {"spotId": "nakagyo", "name": "京都市中京地域体育館", "lat": null, "lng": null}, "likes": [], "filmed": "2024-05-22", "dateOk": true}, {"id": "JAL19Vxkjuo", "title": "5 19", "kind": "basketball", "loc": {"spotId": "wings", "name": "ウィングス京都", "lat": 35.018257, "lng": 135.740145}, "likes": [], "filmed": "2024-05-19", "dateOk": true}, {"id": "z7h_1-T9Zso", "title": "5 15", "kind": "basketball", "loc": {"spotId": "nakagyo", "name": "京都市中京地域体育館", "lat": null, "lng": null}, "likes": [], "filmed": "2024-05-15", "dateOk": true}, {"id": "2blICpANME8", "title": "5 12", "kind": "basketball", "loc": {"spotId": "wings", "name": "ウィングス京都", "lat": 35.018257, "lng": 135.740145}, "likes": [], "filmed": "2024-05-12", "dateOk": true}, {"id": "EryXyHPddyA", "title": "5 4 Tokyo", "kind": "basketball", "loc": {"spotId": "yoyogi", "name": "代々木公園", "lat": 35.671405, "lng": 139.695172}, "likes": [], "filmed": "2024-05-04", "dateOk": true}, {"id": "ait_DSDOhBE", "title": "4 28", "kind": "basketball", "loc": {"spotId": "wings", "name": "ウィングス京都", "lat": 35.018257, "lng": 135.740145}, "likes": [], "filmed": "2024-04-28", "dateOk": true}, {"id": "n2A6h_WD-90", "title": "4-26", "kind": "basketball", "loc": {"spotId": "shimogyo-gym", "name": "下京地域体育館（京都）", "lat": null, "lng": null}, "likes": [], "filmed": "2024-04-26", "dateOk": true}, {"id": "-S3pC9Tf_CE", "title": "4-19 Okinawa", "kind": "basketball", "loc": {"spotId": "ahara-park", "name": "安良波公園", "lat": 26.3039, "lng": 127.758917}, "likes": [], "filmed": "2024-04-19", "dateOk": true}, {"id": "zIQT_UdL8PI", "title": "4 17", "kind": "basketball", "loc": {"spotId": "shimogyo-gym", "name": "下京地域体育館（京都）", "lat": null, "lng": null}, "likes": [], "filmed": "2024-04-17", "dateOk": true}, {"id": "1aUlneFmMbc", "title": "4 14", "kind": "basketball", "loc": {"spotId": "nakagyo", "name": "京都市中京地域体育館", "lat": null, "lng": null}, "likes": [], "filmed": "2024-04-14", "dateOk": true}, {"id": "2fmQWTfbJVY", "title": "4 7", "kind": "basketball", "loc": {"spotId": "nakagyo", "name": "京都市中京地域体育館", "lat": null, "lng": null}, "likes": [], "filmed": "2024-04-07", "dateOk": true}, {"id": "lxS_C7rTR9k", "title": "4 4 Fushimi", "kind": "basketball", "loc": {"spotId": "fushimi-hokubu", "name": "伏見北部地域体育館", "lat": null, "lng": null}, "likes": [], "filmed": "2024-04-04", "dateOk": true}, {"id": "4CtlUSs5YqQ", "title": "2k24 71 75", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "rzKFwP69LOQ", "title": "3-31 KYOTO", "kind": "basketball", "loc": {"spotId": "wings", "name": "ウィングス京都", "lat": 35.018257, "lng": 135.740145}, "likes": [], "filmed": "2024-03-31", "dateOk": true}, {"id": "qApGbd4nkU8", "title": "2k24 61 70", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "Evc06pAwSiA", "title": "3 25 Kyoto", "kind": "basketball", "loc": {"spotId": "higashiyama-gym", "name": "東山地域体育館（京都）", "lat": null, "lng": null}, "likes": [], "filmed": "2024-03-25", "dateOk": true}, {"id": "P7cACMa0E_8", "title": "3 20 Kyoto", "kind": "basketball", "loc": {"spotId": "nakagyo", "name": "京都市中京地域体育館", "lat": null, "lng": null}, "likes": [], "filmed": "2024-03-20", "dateOk": true}, {"id": "SRYnXyIQ3Ig", "title": "Kyoto 3 16", "kind": "basketball", "loc": {"spotId": "higashiyama-gym", "name": "東山地域体育館（京都）", "lat": null, "lng": null}, "likes": [], "filmed": "2024-03-16", "dateOk": true}, {"id": "mNXaHSusdRc", "title": "3 10 Kyoto", "kind": "basketball", "loc": {"spotId": "wings", "name": "ウィングス京都", "lat": 35.018257, "lng": 135.740145}, "likes": [], "filmed": "2024-03-10", "dateOk": true}, {"id": "_8BGITjEC9Q", "title": "3 8 Kyoto", "kind": "basketball", "loc": {"spotId": "higashiyama-gym", "name": "東山地域体育館（京都）", "lat": null, "lng": null}, "likes": [], "filmed": "2024-03-08", "dateOk": true}, {"id": "gVDmJgcDrGk", "title": "3 6 Osaka", "kind": "basketball", "loc": {"spotId": "hos-sumiyoshi", "name": "HOS住吉スポーツセンター（大阪）", "lat": 34.591999, "lng": 135.511559}, "likes": [], "filmed": "2024-03-06", "dateOk": true}, {"id": "rnS39A6iN94", "title": "3-3 Kyoto", "kind": "basketball", "loc": {"spotId": "wings", "name": "ウィングス京都", "lat": 35.018257, "lng": 135.740145}, "likes": [], "filmed": "2024-03-03", "dateOk": true}, {"id": "fVwCPSEQjR8", "title": "2k24 51 60", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "hBnISeBKTEU", "title": "3-1 kyoto", "kind": "basketball", "loc": {"spotId": "nakagyo", "name": "京都市中京地域体育館", "lat": null, "lng": null}, "likes": [], "filmed": "2024-03-01", "dateOk": true}, {"id": "aolTN8a3sgI", "title": "2 29 Kyoto", "kind": "basketball", "loc": {"spotId": "higashiyama-ikiiki", "name": "京都市東山いきいき市民活動センター", "lat": 35.007862, "lng": 135.776674}, "likes": [], "filmed": "2024-02-29", "dateOk": true}, {"id": "VfrFrXZtg6A", "title": "2 24 Osaka Sumiyoshi", "kind": "basketball", "loc": {"spotId": "hos-sumiyoshi", "name": "HOS住吉スポーツセンター（大阪）", "lat": 34.591999, "lng": 135.511559}, "likes": [], "filmed": "2024-02-24", "dateOk": true}, {"id": "FGRtSCZ9KAY", "title": "2 18 Uji", "kind": "basketball", "loc": {"spotId": "uji-minami-jhs", "name": "宇治市立南宇治中学校", "lat": null, "lng": null}, "likes": [], "filmed": "2024-02-18", "dateOk": true}, {"id": "KfhHrxT-iNk", "title": "2 15 Kyoto", "kind": "basketball", "loc": {"spotId": "nakagyo", "name": "京都市中京地域体育館", "lat": null, "lng": null}, "likes": [], "filmed": "2024-02-15", "dateOk": true}, {"id": "NyLKLnFWmYA", "title": "2 12 Kyoto", "kind": "basketball", "loc": {"spotId": "nakagyo", "name": "京都市中京地域体育館", "lat": null, "lng": null}, "likes": [], "filmed": "2024-02-12", "dateOk": true}, {"id": "7M7tj7EQFEw", "title": "2 11 Osaka", "kind": "basketball", "loc": {"spotId": "hos-sumiyoshi", "name": "HOS住吉スポーツセンター（大阪）", "lat": 34.591999, "lng": 135.511559}, "likes": [], "filmed": "2024-02-11", "dateOk": true}, {"id": "dMB5MaL_aHE", "title": "2k24 41 50", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "5xAfbECN7QI", "title": "2024-2-9", "kind": "basketball", "loc": {"spotId": "higashiyama-gym", "name": "東山地域体育館（京都）", "lat": null, "lng": null}, "likes": [], "filmed": "2024-02-09", "dateOk": true}, {"id": "8LdZOxu8Sqw", "title": "2024-2-3 京都", "kind": "basketball", "loc": {"spotId": "wings", "name": "ウィングス京都", "lat": 35.018257, "lng": 135.740145}, "likes": [], "filmed": "2024-02-03", "dateOk": true}, {"id": "nS4WchZ7cq4", "title": "jan 26 Osaka", "kind": "basketball", "loc": {"spotId": "tennoji-sports", "name": "大阪市立天王寺スポーツセンター", "lat": 34.670913, "lng": 135.528585}, "likes": [], "filmed": "2024-01-26", "dateOk": true}, {"id": "hsT-Xgo1Tfg", "title": "1 14 osaka", "kind": "basketball", "loc": {"spotId": "tennoji-sports", "name": "大阪市立天王寺スポーツセンター", "lat": 34.670913, "lng": 135.528585}, "likes": [], "filmed": "2024-01-14", "dateOk": true}, {"id": "XK-BAhmNGaw", "title": "2k24 31 40", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "jJ7QmBDbX0U", "title": "1 9 2024 Osaka", "kind": "basketball", "loc": {"spotId": "tennoji-sports", "name": "大阪市立天王寺スポーツセンター", "lat": 34.670913, "lng": 135.528585}, "likes": [], "filmed": "2024-01-09", "dateOk": true}, {"id": "jKrFUN0SDwg", "title": "2k24 21 30", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "KmepzAnYwi0", "title": "2k24 11 20", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "zyq_slhN-B4", "title": "11:26 大阪福島スポーツセンターバスケ", "kind": "basketball", "loc": {"spotId": "fukushima-sports", "name": "福島スポーツセンター（大阪）", "lat": 34.691621, "lng": 135.473106}, "likes": [], "filmed": "2023-11-26", "dateOk": true}, {"id": "Dl8ng9tjsd0", "title": "11/3 露橋公演バスケ（名古屋）", "kind": "basketball", "loc": {"spotId": "ryokyo-nagoya", "name": "露橋公園（名古屋）", "lat": 35.148998, "lng": 136.886835}, "likes": [], "filmed": "2023-11-03", "dateOk": true}, {"id": "uReZUW8YTY0", "title": "2k24 1 10", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "7mz-JntGP5A", "title": "2024 9月　バスケ", "kind": "basketball", "loc": {"spotId": "suma-kaihin", "name": "須磨海浜公園（神戸）", "lat": 34.647107, "lng": 135.126682}, "likes": [], "filmed": "2023-09-01", "dateOk": true}, {"id": "HSlJ_LyYfQ8", "title": "2k23 61", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "gXs1s14IDKE", "title": "枚方公園　10 22", "kind": "basketball", "loc": {"spotId": "hirakata-koen", "name": "枚方公園（大阪）", "lat": 34.811404, "lng": 135.63937}, "likes": [], "filmed": "2023-10-22", "dateOk": true}, {"id": "JkWwtrmc_1o", "title": "神戸　みなとのもり公園　10:14", "kind": "basketball", "loc": {"spotId": "minatonomori", "name": "みなとのもり公園（神戸）", "lat": null, "lng": null}, "likes": [], "filmed": "2023-10-14", "dateOk": true}, {"id": "G-mcYwq9-s4", "title": "2k23 51-60", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "8B46RNTHoF0", "title": "rdr2 2", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "rSpEFitTayk", "title": "2023 9 30 yoyogi park", "kind": "basketball", "loc": {"spotId": "yoyogi", "name": "代々木公園", "lat": 35.671405, "lng": 139.695172}, "likes": [], "filmed": "2023-09-30", "dateOk": true}, {"id": "R04Cu6gpe0U", "title": "９月１０日　代々木公園バスケ", "kind": "basketball", "loc": {"spotId": "yoyogi", "name": "代々木公園", "lat": 35.671405, "lng": 139.695172}, "likes": [], "filmed": "2023-09-10", "dateOk": true}, {"id": "4XPt-02fQNg", "title": "９月２日　鷹取　バスケ", "kind": "basketball", "loc": {"spotId": "takatori", "name": "鷹取（兵庫）", "lat": null, "lng": null}, "likes": [], "filmed": "2023-09-02", "dateOk": true}, {"id": "FKQivJD2yfc", "title": "8:19 泉南ロングパーク", "kind": "basketball", "loc": {"spotId": "sennan-long", "name": "泉南ロングパーク（大阪、和歌山？）", "lat": null, "lng": null}, "likes": [], "filmed": "2023-08-19", "dateOk": true}, {"id": "8Nq3579N9yA", "title": "2023 8:12 野尻湖", "kind": "basketball", "loc": {"spotId": "nojiriko", "name": "野尻湖（長野）", "lat": 36.825345, "lng": 138.218077}, "likes": [], "filmed": "2023-08-12", "dateOk": true}, {"id": "DolGS588RZk", "title": "2k23 41 50", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "Vf3MfdPo-2U", "title": "8:4 枚方公園　バスケ", "kind": "basketball", "loc": {"spotId": "hirakata-koen", "name": "枚方公園（大阪）", "lat": 34.811404, "lng": 135.63937}, "likes": [], "filmed": "2023-08-04", "dateOk": true}, {"id": "KF8ZQh_PJYA", "title": "2k23 31 40", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "diIBfHQPFG8", "title": "7:29 みなとのもり公園", "kind": "basketball", "loc": {"spotId": "minatonomori", "name": "みなとのもり公園（神戸）", "lat": null, "lng": null}, "likes": [], "filmed": "2023-07-29", "dateOk": true}, {"id": "1qA4NR4HgZ0", "title": "泉南ロングパーク　2023:7:16", "kind": "basketball", "loc": {"spotId": "sennan-long", "name": "泉南ロングパーク（大阪、和歌山？）", "lat": null, "lng": null}, "likes": [], "filmed": "2023-07-16", "dateOk": true}, {"id": "WG4np-SfSVc", "title": "皇子が丘公園　バスケ", "kind": "basketball", "loc": {"spotId": "ojigaoka-shiga", "name": "皇子が丘公園（滋賀）", "lat": null, "lng": null}, "likes": [], "filmed": "2023-07-08", "dateOk": true}, {"id": "knaAai_0eFQ", "title": "RDR", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "80Ulk03KsjQ", "title": "ghost of tsushima", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "gInqMU5wZGk", "title": "just cause 4", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "dPj6ch4sD9k", "title": "枚方公園バスケ", "kind": "basketball", "loc": {"spotId": "hirakata-koen", "name": "枚方公園（大阪）", "lat": 34.811404, "lng": 135.63937}, "likes": [], "filmed": "2023-06-24", "dateOk": true}, {"id": "YFPkiSuEnc8", "title": "泉南ロングビーチ　バスケ", "kind": "basketball", "loc": {"spotId": "sennan-long", "name": "泉南ロングパーク（大阪、和歌山？）", "lat": null, "lng": null}, "likes": [], "filmed": "2023-06-17", "dateOk": true}, {"id": "6Bh_Bmo9-fY", "title": "みなとのもり公園　バスケ　6/4", "kind": "basketball", "loc": {"spotId": "minatonomori", "name": "みなとのもり公園（神戸）", "lat": 34.01149, "lng": 137.68066}, "likes": [], "filmed": "2023-06-04", "dateOk": true}, {"id": "Y1ur7SWvWVs", "title": "The Crew® 2_20230104093631", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "UNTDpm9INDM", "title": "FIFA 20_20221218215454", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "rwz4gkc-nDc", "title": "did i kill", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "LRg7ESxwrsI", "title": "2k23  21 30", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "4jg_uZHyjS0", "title": "2k23 10-20", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "ojTeaf_YpY8", "title": "2k23 0 10", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "LmvaYeVr97E", "title": "2k22 81-91", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "T3C7X-tSb-I", "title": "2k22 71 80", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "unUa4NIUs3w", "title": "2k22 61 70", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "C10zSR6mufI", "title": "2k22 51 60", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "iZVGl9OSdCc", "title": "2k22 41 50", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "h0npmYdl4fs", "title": "2k arcade- best friend", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "F8zBsxNEhR0", "title": "2k arcade moltev", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "f1sp0HjM5v4", "title": "2k22 31 40", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "WUBYXtqebyo", "title": "2k arcade-after hours", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "fAQII8WEgpY", "title": "2k22 21 30", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "XbnyjIquCQA", "title": "2k22 1 10", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "tjN2-CTK6N0", "title": "2k22 11 20", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "PzU3fJmq3V0", "title": "random vid 2020", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "ClvWqEJ9w6w", "title": "pubg 51 60", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "bND0soRexCU", "title": "pubg 40 50", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "SropntfQvvA", "title": "2020 Oregon", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "GkNh4tEaZuY", "title": "pubg 21 30", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "VCGBpIjFo6I", "title": "pubg 11 20", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "ZbdHTx6EQ34", "title": "pubg 1 10", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "N_q-h7AwTnU", "title": "NBA 61 70", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "u8BnfGAUlK0", "title": "NBA 51 60", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "51RAsjltUNQ", "title": "nba41 50", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "Ahc6g4z2IFE", "title": "NBA 31 40", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "v7-CusGfcr4", "title": "NBA 21 30", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "cYGczteH56A", "title": "3 3 21", "kind": "basketball", "loc": {"spotId": "northpark", "name": "North Park Blocks (Portland)", "lat": 45.524927, "lng": -122.679457}, "likes": [], "filmed": "2021-03-03", "dateOk": true}, {"id": "E2vjhWJHicQ", "title": "2k comp 11 20", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "Yf6BMeqN_aI", "title": "2k comp 0 10", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "5LrCl4-s4p4", "title": "12 2 20", "kind": "basketball", "loc": {"spotId": "northpark", "name": "North Park Blocks (Portland)", "lat": 45.524927, "lng": -122.679457}, "likes": [], "filmed": "2020-12-02", "dateOk": true}, {"id": "pk1Q0tC_ScI", "title": "11 2 20", "kind": "basketball", "loc": {"spotId": "northpark", "name": "North Park Blocks (Portland)", "lat": 45.524927, "lng": -122.679457}, "likes": [], "filmed": "2020-11-02", "dateOk": true}, {"id": "MD7PIwDXMFk", "title": "10 29 20", "kind": "basketball", "loc": {"spotId": "northpark", "name": "North Park Blocks (Portland)", "lat": 45.524927, "lng": -122.679457}, "likes": [], "filmed": "2020-10-29", "dateOk": true}, {"id": "kqCGa4g50Y8", "title": "10:20:20", "kind": "basketball", "loc": {"spotId": "northpark", "name": "North Park Blocks (Portland)", "lat": 45.524927, "lng": -122.679457}, "likes": [], "filmed": "2020-10-20", "dateOk": true}, {"id": "uf378sOVf_8", "title": "9 29 2020", "kind": "basketball", "loc": {"spotId": "northpark", "name": "North Park Blocks (Portland)", "lat": 45.524927, "lng": -122.679457}, "likes": [], "filmed": "2020-09-29", "dateOk": true}, {"id": "ixqD-IFedhQ", "title": "9 9 20", "kind": "basketball", "loc": {"spotId": "northpark", "name": "North Park Blocks (Portland)", "lat": 45.524927, "lng": -122.679457}, "likes": [], "filmed": "2020-09-09", "dateOk": true}, {"id": "KCyRpjkXZ-U", "title": "9 2 2020", "kind": "basketball", "loc": {"spotId": "northpark", "name": "North Park Blocks (Portland)", "lat": 45.524927, "lng": -122.679457}, "likes": [], "filmed": "2020-09-02", "dateOk": true}, {"id": "B3sTfErht40", "title": "8 27 2020", "kind": "basketball", "loc": {"spotId": "northpark", "name": "North Park Blocks (Portland)", "lat": 45.524927, "lng": -122.679457}, "likes": [], "filmed": "2020-08-27", "dateOk": true}, {"id": "B3zVUvKu7tM", "title": "8 10 2020", "kind": "basketball", "loc": {"spotId": "northpark", "name": "North Park Blocks (Portland)", "lat": 45.524927, "lng": -122.679457}, "likes": [], "filmed": "2020-08-10", "dateOk": true}, {"id": "nkvLe_Hn4k0", "title": "Aug 10, Northern Park", "kind": "basketball", "loc": {"spotId": "northpark", "name": "North Park Blocks (Portland)", "lat": 45.524927, "lng": -122.679457}, "likes": [], "filmed": "2020-08-10", "dateOk": true}, {"id": "tUub6SDd5FU", "title": "Jul 31, Northern park", "kind": "basketball", "loc": {"spotId": "northpark", "name": "North Park Blocks (Portland)", "lat": 45.524927, "lng": -122.679457}, "likes": [], "filmed": "2020-07-31", "dateOk": true}, {"id": "ZdKitCo-C40", "title": "Aug 5, Northern Park", "kind": "basketball", "loc": {"spotId": "northpark", "name": "North Park Blocks (Portland)", "lat": 45.524927, "lng": -122.679457}, "likes": [], "filmed": "2020-08-05", "dateOk": true}, {"id": "SWo5rLSfp2I", "title": "June 2020Drone", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "SxTOzd3VhoE", "title": "Jul 2020Drone", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "qNjz48UepzQ", "title": "NBA2K20 My carrer All Star", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "VTn4NhGYqfA", "title": "7 23 2020Northern Park", "kind": "basketball", "loc": {"spotId": "northpark", "name": "North Park Blocks (Portland)", "lat": 45.524927, "lng": -122.679457}, "likes": [], "filmed": "2020-07-23", "dateOk": true}, {"id": "Y8ifdp-qrv4", "title": "Bball at Northern park", "kind": "basketball", "loc": {"spotId": "northpark", "name": "North Park Blocks (Portland)", "lat": 45.524927, "lng": -122.679457}, "likes": [], "filmed": "2020-07-17", "dateOk": true}, {"id": "4nr8MKGtOaQ", "title": "Nba2k20 my carrerre", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "mwJMYEaJ2go", "title": "Jun 2020 1st half", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "fqtlgRIAJM4", "title": "Mar 2020, mini", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "MQdfWv6qkFY", "title": "My carrer nba2k20 mobile", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "9iiTp9wf4JU", "title": "2028 zion", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "YHPzpEzsEAE", "title": "2027 curry", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "PTPRmxt9fcM", "title": "2026 Giannis", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "qBhRZNk33SQ", "title": "2025 MJ", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "5HTSlFznhu0", "title": "2024 Trae", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "8dZ_GiL1PQY", "title": "2023 (Trae)", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "2L8zslof95s", "title": "2022 (LeBron)", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "4ACoNIKQYwo", "title": "2021 (melo)", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "rxTaOuXYlBQ", "title": "2020 (drose)", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "bz-n-Ta2kEA", "title": "2023", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "I5xORWrwjF4", "title": "2022", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "40cvTaOjGZE", "title": "2020 Mar", "kind": "unsorted", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "Pu-N9qvkEj8", "title": "Sakura in Portland 2020.3.21", "kind": "other", "loc": null, "likes": [], "filmed": "2020-03-21", "dateOk": false}, {"id": "92T4JxVopAM", "title": "2020 3 15", "kind": "basketball", "loc": {"spotId": "pearl", "name": "24 Hour Fitness (Pearl District, Portland)", "lat": 45.528284, "lng": -122.683843}, "likes": [], "filmed": "2020-03-15", "dateOk": true}, {"id": "9uDx_X6yb0M", "title": "2020 3 13", "kind": "basketball", "loc": {"spotId": "pearl", "name": "24 Hour Fitness (Pearl District, Portland)", "lat": 45.528284, "lng": -122.683843}, "likes": [], "filmed": "2020-03-13", "dateOk": true}, {"id": "6LOjun3_JUs", "title": "2020 3 11", "kind": "basketball", "loc": {"spotId": "pearl", "name": "24 Hour Fitness (Pearl District, Portland)", "lat": 45.528284, "lng": -122.683843}, "likes": [], "filmed": "2020-03-11", "dateOk": true}, {"id": "k-uJUqi7QtM", "title": "2020.3.9", "kind": "basketball", "loc": {"spotId": "pearl", "name": "24 Hour Fitness (Pearl District, Portland)", "lat": 45.528284, "lng": -122.683843}, "likes": [], "filmed": "2020-03-09", "dateOk": true}, {"id": "ZVXO8M1gVJs", "title": "2020 3 8", "kind": "basketball", "loc": {"spotId": "pearl", "name": "24 Hour Fitness (Pearl District, Portland)", "lat": 45.528284, "lng": -122.683843}, "likes": [], "filmed": "2020-03-08", "dateOk": true}, {"id": "E5wTFqyinBo", "title": "2020.3.4", "kind": "basketball", "loc": {"spotId": "pearl", "name": "24 Hour Fitness (Pearl District, Portland)", "lat": 45.528284, "lng": -122.683843}, "likes": [], "filmed": "2020-03-04", "dateOk": true}, {"id": "3nGMU6_-j0Y", "title": "Feb highlights 2020", "kind": "unsorted", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "moUjpLxoUyg", "title": "2020 3 2", "kind": "basketball", "loc": {"spotId": "pearl", "name": "24 Hour Fitness (Pearl District, Portland)", "lat": 45.528284, "lng": -122.683843}, "likes": [], "filmed": "2020-03-02", "dateOk": true}, {"id": "x57v6ool3Jo", "title": "2020 2 28", "kind": "basketball", "loc": {"spotId": "wallace-park", "name": "Wallace Park (Portland)", "lat": 45.533258, "lng": -122.703876}, "likes": [], "filmed": "2020-02-28", "dateOk": true}, {"id": "__Jz1J9c2j0", "title": "2020 2 29", "kind": "basketball", "loc": {"spotId": "pearl", "name": "24 Hour Fitness (Pearl District, Portland)", "lat": 45.528284, "lng": -122.683843}, "likes": [], "filmed": "2020-02-29", "dateOk": true}, {"id": "beNfgNveEmE", "title": "2020.2.26", "kind": "basketball", "loc": {"spotId": "pearl", "name": "24 Hour Fitness (Pearl District, Portland)", "lat": 45.528284, "lng": -122.683843}, "likes": [], "filmed": "2020-02-26", "dateOk": true}, {"id": "aBKog8OL8ws", "title": "2020 2 23", "kind": "basketball", "loc": {"spotId": "pearl", "name": "24 Hour Fitness (Pearl District, Portland)", "lat": 45.528284, "lng": -122.683843}, "likes": [], "filmed": "2020-02-23", "dateOk": true}, {"id": "eEuS_Ein7Yc", "title": "2020.2.21", "kind": "basketball", "loc": {"spotId": "pearl", "name": "24 Hour Fitness (Pearl District, Portland)", "lat": 45.528284, "lng": -122.683843}, "likes": [], "filmed": "2020-02-21", "dateOk": true}, {"id": "ofe1Tj5igVc", "title": "2020.2.19", "kind": "basketball", "loc": {"spotId": "pearl", "name": "24 Hour Fitness (Pearl District, Portland)", "lat": 45.528284, "lng": -122.683843}, "likes": [], "filmed": "2020-02-19", "dateOk": true}, {"id": "nKVbwJKiPC0", "title": "Feb 20. comp(仮)", "kind": "unsorted", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "CkHo0lUxFXk", "title": "2020.2.16", "kind": "basketball", "loc": {"spotId": "pearl", "name": "24 Hour Fitness (Pearl District, Portland)", "lat": 45.528284, "lng": -122.683843}, "likes": [], "filmed": "2020-02-16", "dateOk": true}, {"id": "JH9bJFYPvuc", "title": "2020 2 14", "kind": "basketball", "loc": {"spotId": "pearl", "name": "24 Hour Fitness (Pearl District, Portland)", "lat": 45.528284, "lng": -122.683843}, "likes": [], "filmed": "2020-02-14", "dateOk": true}, {"id": "Uw1CcplcZuw", "title": "2020.2.12", "kind": "basketball", "loc": {"spotId": "pearl", "name": "24 Hour Fitness (Pearl District, Portland)", "lat": 45.528284, "lng": -122.683843}, "likes": [], "filmed": "2020-02-12", "dateOk": true}, {"id": "Zm-vDU1j7_k", "title": "2020.2.8", "kind": "basketball", "loc": {"spotId": "pearl", "name": "24 Hour Fitness (Pearl District, Portland)", "lat": 45.528284, "lng": -122.683843}, "likes": [], "filmed": "2020-02-08", "dateOk": true}, {"id": "8jpuzFjQzsQ", "title": "2020.2.2", "kind": "basketball", "loc": {"spotId": "pearl", "name": "24 Hour Fitness (Pearl District, Portland)", "lat": 45.528284, "lng": -122.683843}, "likes": [], "filmed": "2020-02-02", "dateOk": true}, {"id": "vRy1Myb1s14", "title": "Jan basketball highlight", "kind": "unsorted", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "W3ffa9F7F3Q", "title": "2020.1.31", "kind": "basketball", "loc": {"spotId": "pearl", "name": "24 Hour Fitness (Pearl District, Portland)", "lat": 45.528284, "lng": -122.683843}, "likes": [], "filmed": "2020-01-31", "dateOk": true}, {"id": "pJJzTuxYzBY", "title": "FIFA 20", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "RVPbqiqNxTQ", "title": "2020.1.27", "kind": "basketball", "loc": {"spotId": "pearl", "name": "24 Hour Fitness (Pearl District, Portland)", "lat": 45.528284, "lng": -122.683843}, "likes": [], "filmed": "2020-01-27", "dateOk": true}, {"id": "6QA0yBz2I0E", "title": "FIFA 20 222 Goal", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "D_QPKhYlhf4", "title": "2020.1.25", "kind": "basketball", "loc": {"spotId": "pearl", "name": "24 Hour Fitness (Pearl District, Portland)", "lat": 45.528284, "lng": -122.683843}, "likes": [], "filmed": "2020-01-25", "dateOk": true}, {"id": "1gipVCZ2Qeg", "title": "2020.1.22", "kind": "basketball", "loc": {"spotId": "pearl", "name": "24 Hour Fitness (Pearl District, Portland)", "lat": 45.528284, "lng": -122.683843}, "likes": [], "filmed": "2020-01-22", "dateOk": true}, {"id": "FOL2tGxmn10", "title": "2020.1.20", "kind": "basketball", "loc": {"spotId": "pearl", "name": "24 Hour Fitness (Pearl District, Portland)", "lat": 45.528284, "lng": -122.683843}, "likes": [], "filmed": "2020-01-20", "dateOk": true}, {"id": "ocUyfyvQtAY", "title": "2020.1.13", "kind": "basketball", "loc": {"spotId": "pearl", "name": "24 Hour Fitness (Pearl District, Portland)", "lat": 45.528284, "lng": -122.683843}, "likes": [], "filmed": "2020-01-13", "dateOk": true}, {"id": "_X9lfX1mTMo", "title": "2020.1.12", "kind": "basketball", "loc": {"spotId": "pearl", "name": "24 Hour Fitness (Pearl District, Portland)", "lat": 45.528284, "lng": -122.683843}, "likes": [], "filmed": "2020-01-12", "dateOk": true}, {"id": "4ml_deuI-tY", "title": "2020.1.10", "kind": "basketball", "loc": {"spotId": "pearl", "name": "24 Hour Fitness (Pearl District, Portland)", "lat": 45.528284, "lng": -122.683843}, "likes": [], "filmed": "2020-01-10", "dateOk": true}, {"id": "uOo8pCD5n8g", "title": "2020.1.8", "kind": "basketball", "loc": {"spotId": "pearl", "name": "24 Hour Fitness (Pearl District, Portland)", "lat": 45.528284, "lng": -122.683843}, "likes": [], "filmed": "2020-01-08", "dateOk": true}, {"id": "jq9P2GaOJOM", "title": "2020.1.6", "kind": "basketball", "loc": {"spotId": "pearl", "name": "24 Hour Fitness (Pearl District, Portland)", "lat": 45.528284, "lng": -122.683843}, "likes": [], "filmed": "2020-01-06", "dateOk": true}, {"id": "o0mKFn-8G6c", "title": "2020.1.4", "kind": "basketball", "loc": {"spotId": "pearl", "name": "24 Hour Fitness (Pearl District, Portland)", "lat": 45.528284, "lng": -122.683843}, "likes": [], "filmed": "2020-01-04", "dateOk": true}, {"id": "1_l7aH4CWQw", "title": "2020.1.2", "kind": "basketball", "loc": {"spotId": "pearl", "name": "24 Hour Fitness (Pearl District, Portland)", "lat": 45.528284, "lng": -122.683843}, "likes": [], "filmed": "2020-01-02", "dateOk": true}, {"id": "BQG2XoX8Gis", "title": "Best of 2019", "kind": "unsorted", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "Mgw5ygUinis", "title": "2019.12.30", "kind": "basketball", "loc": {"spotId": "pearl", "name": "24 Hour Fitness (Pearl District, Portland)", "lat": 45.528284, "lng": -122.683843}, "likes": [], "filmed": "2019-12-30", "dateOk": true}, {"id": "TG7iSqOmLfw", "title": "2019.12.28", "kind": "basketball", "loc": {"spotId": "pearl", "name": "24 Hour Fitness (Pearl District, Portland)", "lat": 45.528284, "lng": -122.683843}, "likes": [], "filmed": "2019-12-28", "dateOk": true}, {"id": "yonkMRbuYpo", "title": "B-ball 2019.12.22", "kind": "basketball", "loc": {"spotId": "pearl", "name": "24 Hour Fitness (Pearl District, Portland)", "lat": 45.528284, "lng": -122.683843}, "likes": [], "filmed": "2019-12-22", "dateOk": true}, {"id": "srLO9pWPsr4", "title": "FIFA 20", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "AwLuD_CdPO8", "title": "AC syndicate brutal kill compilation", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "b8SgTjpYc-0", "title": "b-ball 12.17.19", "kind": "basketball", "loc": {"spotId": "pearl", "name": "24 Hour Fitness (Pearl District, Portland)", "lat": 45.528284, "lng": -122.683843}, "likes": [], "filmed": "2019-12-17", "dateOk": true}, {"id": "NeAzPFhlQ0Q", "title": "B-ball 12.15.19", "kind": "basketball", "loc": {"spotId": "pearl", "name": "24 Hour Fitness (Pearl District, Portland)", "lat": 45.528284, "lng": -122.683843}, "likes": [], "filmed": "2019-12-15", "dateOk": true}, {"id": "xBEuq0SmON4", "title": "fifa 20 skill moves", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "LQgbsbxb23g", "title": "b-ball 12.10.19", "kind": "basketball", "loc": {"spotId": "pearl", "name": "24 Hour Fitness (Pearl District, Portland)", "lat": 45.528284, "lng": -122.683843}, "likes": [], "filmed": "2019-12-10", "dateOk": true}, {"id": "Abh9gnz-ipU", "title": "b-ball 12.7.2019", "kind": "basketball", "loc": {"spotId": "pearl", "name": "24 Hour Fitness (Pearl District, Portland)", "lat": 45.528284, "lng": -122.683843}, "likes": [], "filmed": "2019-12-07", "dateOk": true}, {"id": "XMtoFGncvKE", "title": "Unity", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "uNBEYe02IFc", "title": "b-ball 12.3.2019", "kind": "basketball", "loc": {"spotId": "pearl", "name": "24 Hour Fitness (Pearl District, Portland)", "lat": 45.528284, "lng": -122.683843}, "likes": [], "filmed": "2019-12-03", "dateOk": true}, {"id": "iQo_VRB2fGI", "title": "b-ball 11.30.19", "kind": "basketball", "loc": {"spotId": "pearl", "name": "24 Hour Fitness (Pearl District, Portland)", "lat": 45.528284, "lng": -122.683843}, "likes": [], "filmed": "2019-11-30", "dateOk": true}, {"id": "B7BWWIh_OY8", "title": "FIFA 20_20191202053235", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "ZShMxkzGbI4", "title": "琵琶湖大花火大会 8/8", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "ruKT87GiWSs", "title": "2k19  comp", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "IKMBU63wyMs", "title": "2k19 atl", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "5UoKdrbCDWI", "title": "2k19 lake show", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "JMHD3ODyGKA", "title": "2k19 okc", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "P_1yyp-MNyY", "title": "2k18", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "EvNK3J0ts7k", "title": "NBA2K18 cavs vs celtics", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "hNMl4rvigXc", "title": "2k19 greel freak", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "nLQ8UcsJWGo", "title": "16ヶ月", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "R2EPQBz-bgc", "title": "What are you doing in New year's Eve", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "Au8wIRiaUbQ", "title": "January 6, 2019", "kind": "basketball", "loc": {"spotId": "beaverton", "name": "24 Hour Fitness (Beaverton)", "lat": 45.439066, "lng": -122.829637}, "likes": [], "filmed": "2019-01-06", "dateOk": true}, {"id": "9hPIu2JgU3M", "title": "January 5, 2019", "kind": "other", "loc": null, "likes": [], "filmed": "2019-01-05", "dateOk": false}, {"id": "BVp8NZiAnXE", "title": "nba2k19", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "fShrFjZJfcw", "title": "NBA2k19", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "-VlrIzPkbL0", "title": "No one knows me like the piano in my mother's home", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "K7KjA9KuXkY", "title": "リメンバーミー", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "tg4s8bkaiVg", "title": "Remember me", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "a52jQCHPFY8", "title": "ピアノ", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "CFWdAlR5NLk", "title": "My Movie 96", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "LTJYqv_BwSQ", "title": "ukulele", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "C0Ss3mQYfQo", "title": "my fav cat2", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "hful8iO6Aew", "title": "聲の形レビュー　chris stuckman 翻訳", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "IsgonInQj8w", "title": "友ヶ島　2018/8/21", "kind": "other", "loc": null, "likes": [], "filmed": "2018-08-21", "dateOk": false}, {"id": "aJZ1a_4ynG0", "title": "my fav cat 5", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "Ifyq5SdW5pg", "title": "my fav cat 4", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "gJMwOodhhCA", "title": "my fav cat 3", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "PamUUXOOgd0", "title": "oct,17,16", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "eZiWcxs2cVc", "title": "夢見月に何想ふ/RADWIMPS 　歌ってみた/弾いてみた　akai mpk mini mk2", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "jn8bvGK2tHc", "title": "YOUNG&DUMB,BANK ACOUNT AND BODAK YELLOW akai mpki mini mk2 cover", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "tCzP42wVFsY", "title": "girls like you", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "_B21TUwhHtk", "title": "Girls Like You[Lyrics]/walk off the earth", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "7Xul_u1kfCE", "title": "You say it's good I say it's great but it could be better", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "NRC2NU53v-A", "title": "Why/Bazzi akai mpk mini mk2 cover", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "KovD0Xw6YlQ", "title": "Psycho,God's plan,and Look alive/akai mpk mini2", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "dx2aAM93A0g", "title": "congratulation", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "Sdita-IS_GY", "title": "OTW,SAD!,and We Belong Together cover by nisino25 /Akai mpk mini2", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "kylc2N4jRP0", "title": "HAVANA/akai MPK mini", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "JwqoYRi2CWM", "title": "Love yourself cover by nisino25 akai mpk mini2", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "WpzJaCOgp_4", "title": "13rw edit", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "RdrhOw4vR0I", "title": "Turbo league", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "vN3W3V3WQDE", "title": "My first ever cat", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "_QvlC6ZmYc8", "title": "Casey Neistat drone montage", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "2WwZLF80MlA", "title": "Lamelo Ball challenge", "kind": "basketball", "loc": {"spotId": "sapporo-heiwa", "name": "札幌市平和児童会館", "lat": 43.059418, "lng": 141.256102}, "likes": [], "filmed": "2017-10-20", "dateOk": true}, {"id": "t1527B_he2k", "title": "児童館バスケ", "kind": "basketball", "loc": {"spotId": "sapporo-nishino", "name": "札幌市西野児童会館", "lat": 43.06584, "lng": 141.271393}, "likes": [], "filmed": "2027-10-01", "dateOk": true}, {"id": "iapRLLyhr78", "title": "Hell yeah", "kind": "basketball", "loc": {"spotId": "sapporo-nishino", "name": "札幌市西野児童会館", "lat": 43.06584, "lng": 141.271393}, "likes": [], "filmed": "2017-10-01", "dateOk": true}, {"id": "yKqNn-2Lza0", "title": "旭山記念公園へ", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "i3_O8E6njsE", "title": "NBA2K17 mobile app game6 3pt game winner!", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "qtkpUqg0324", "title": "旭山記念公園からの札幌の朝日のタイムラプス/Timelapse of Sapporo's sunrise from Asahiyama Kinenkouen", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "JhULuNmdTPE", "title": "NBA2K17 mobile app game7 we were so close though", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "ByNdkQjVik4", "title": "NBA2K17 All Star Game!", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "5IT2cUGJawY", "title": "Sunrise Timelapse in Sapporo!", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "rFR3ha_uWuQ", "title": "NBA2K17 mobile app crazy game winners !!", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "BtqYOTW8WsA", "title": "NBA2K17 mobile app crazy game winner by Kyrie Irving!!", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "sXr_Ga2cnv0", "title": "NBA2K17 mobile app NBA final game6", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "HfgPgjDhdG0", "title": "Here is my cutest kitten😊", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "ZKwclsvnxrU", "title": "NBA2K17 mobile app 300pts challenge by Kyrie Irving!", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "I0NWhgBgUQE", "title": "NBA2K17 mobile app My Player!!", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "Fs1pjiEEmqg", "title": "timelapse in Kyoto", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "kh--b5YtzU8", "title": "NBA2K17 mobile app Black Top", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "-5-DxxIY3Oc", "title": "NBA2K17 mobile app   Celtics did amazing come back from 1-3 lead!!!!", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "JDP2tSTF0mc", "title": "NBA2K17 mobile GSW vs CLE CRAZY ENDING!!!", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "jgG8g3gENk0", "title": "NBA2K17 ALL STAR mobile", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "OE_4ZkAsfsc", "title": "NBA 2K17 mobile app 1on1", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "meIQqj-R_cY", "title": "Time lapse in Zenibako beach", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "UJpAI7nweQ0", "title": "Having fun with these boys. IT WAS LIT🔥", "kind": "basketball", "loc": {"spotId": "nishimiya-nosawa", "name": "西宮の沢公園（札幌）", "lat": 43.101135, "lng": 141.261362}, "likes": [], "filmed": "2017-09-02", "dateOk": true}, {"id": "aRncxFpNbE4", "title": "1 on1", "kind": "basketball", "loc": {"spotId": "sapporo-nishino", "name": "札幌市西野児童会館", "lat": 43.06584, "lng": 141.271393}, "likes": [], "filmed": "2017-09-01", "dateOk": true}, {"id": "oj2VD7rgd_8", "title": "Isiah Thomas Highlight", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "IG5unyas8r4", "title": "Final Quarter of NBA FINAL!!!", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "1ADopHDlUq8", "title": "Game winner by IT4!!!", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "F7SEKonG0VQ", "title": "ボクノート", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}, {"id": "GQFYjHbnXno", "title": "瞳を閉じて", "kind": "other", "loc": null, "likes": [], "filmed": "", "dateOk": false}]};
+      let saved = null;
+      try { saved = JSON.parse(localStorage.getItem(STORE_KEY)); } catch (e) {}
+      if (!saved) saved = EMBEDDED_STATE;
+      const savedById = new Map(((saved && saved.videos) || []).map(v => [v.id, v]));
+      const state = reactive({
+        videos: SEED.map(([id, title]) => ({
+          id, title, kind: 'unsorted', loc: null, likes: [], filmed: FILMED[id] || '', dateOk: false,
+          ...(savedById.get(id) || {}),
+        })),
+      });
+
+      const tabs = [
+        { id: 'map', label: '🗺 Map' },
+        { id: 'videos', label: '🎬 Videos' },
+        { id: 'likes', label: '♥ Likes' },
+      ];
+      const tab = ref('map');
+      const filter = ref('basketball');
+      const editMode = ref(false);
+      const showConfirmed = ref(false);
+      const showLocated = ref(false);
+      const customOnly = ref(false);
+      const playerId = ref(null);   // video shown in the in-page player
+      const playerVideo = computed(() => state.videos.find(v => v.id === playerId.value) || null);
+      const locOpenIds = reactive({}); // which Videos rows have their location list open
+      function toggleLocOpen(id) { locOpenIds[id] = !locOpenIds[id]; }
+      // a custom pin: picked "Custom (click map)" (spotId is null)
+      const isCustom = v => !!v.loc && !v.loc.spotId;
+      const customCount = computed(() => state.videos.filter(isCustom).length);
+      const q = ref('');
+      const mapQ = ref('');
+      const likedOnly = ref(false);
+      const selectedId = ref(null);
+      const pickId = ref(null);
+      const drafts = reactive({});
+
+      // ---- derived
+      const counts = computed(() => ({
+        basketball: state.videos.filter(v => v.kind === 'basketball').length,
+        unsorted: state.videos.filter(v => v.kind === 'unsorted').length,
+        other: state.videos.filter(v => v.kind === 'other').length,
+        placed: state.videos.filter(hasPin).length,
+      }));
+
+      const confirmedCount = computed(() => state.videos.filter(v => v.dateOk).length);
+      const locatedCount = computed(() => state.videos.filter(v => v.loc).length);
+
+      // Videos tab opens on Basketball; the chips switch between kinds.
+      const filters = computed(() => [
+        { id: 'basketball', label: 'Basketball', count: counts.value.basketball },
+        { id: 'unsorted', label: 'Unsorted', count: counts.value.unsorted },
+      ]);
+
+      const visibleVideos = computed(() => {
+        const s = q.value.trim().toLowerCase();
+        return state.videos.filter(v => {
+          if (v.kind === 'other') return false;                      // not basketball: never shown here
+          if (filter.value !== 'all' && v.kind !== filter.value) return false;
+          if (customOnly.value) {
+            if (!isCustom(v)) return false;                           // custom-pin view ignores confirmed/located hiding
+          } else if (!(showConfirmed.value || !v.dateOk) || !(showLocated.value || !v.loc)) {
+            return false;
+          }
+          return !s || v.title.toLowerCase().includes(s);
+        });
+      });
+
+      const mapList = computed(() => {
+        const s = mapQ.value.trim().toLowerCase();
+        return state.videos.filter(v => v.kind !== 'other' && (!s || v.title.toLowerCase().includes(s)));
+      });
+
+      const likeVideos = computed(() =>
+        state.videos.filter(v => v.kind !== 'other' && (!likedOnly.value || v.likes.length)));
+
+      const selected = computed(() => state.videos.find(v => v.id === selectedId.value) || null);
+
+      function hasPin(v) {
+        return v.kind !== 'other' && !!v.loc && v.loc.lat != null && v.loc.lng != null;
+      }
+
+      // ---- map
+      const mapEl = ref(null);
+      let map = null;
+      let layer = null;
+
+      // one marker per spot: the first video's thumbnail, a count, and a popup listing every video there
+      function renderMarkers() {
+        if (!layer) return;
+        layer.clearLayers();
+        const spots = new Map();
+        for (const v of state.videos) {
+          if (!hasPin(v)) continue;
+          const key = v.loc.lat.toFixed(5) + ',' + v.loc.lng.toFixed(5);
+          if (!spots.has(key)) spots.set(key, {
+            lat: v.loc.lat, lng: v.loc.lng, name: v.loc.name || '', city: (SPOT_AREA[v.loc.spotId] || [])[1] || '',
+            label: SPOT_SHORT[v.loc.spotId] || (v.loc.name || '').replace(/[（(].*$/, '').trim(), videos: [],
+          });
+          spots.get(key).videos.push(v);
+        }
+        for (const s of spots.values()) {
+          const n = s.videos.length;
+          const icon = L.divIcon({
+            className: 'spot-marker',
+            html: `<div class="spot-pin"><img src="${thumb(s.videos[0].id)}" alt=""><span class="spot-count">${n}</span></div>`
+              + (s.label ? `<div class="spot-city" title="${esc(s.name)}">${esc(s.label)}</div>` : ''),
+            iconSize: [72, 58],
+            iconAnchor: [36, 20],
+          });
+          const rows = s.videos.map(v =>
+            `<div class="spot-row" data-vid="${v.id}"><img src="${thumb(v.id)}" alt=""><span>${esc(v.title)}</span></div>`).join('');
+          const marker = L.marker([s.lat, s.lng], { icon, title: s.name, videoCount: n, city: s.city })
+            .bindPopup(`<div class="spot-popup"><div class="spot-title">${esc(s.name)} · ${n}</div>${rows}</div>`, { maxHeight: 320, minWidth: 260 })
+            .addTo(layer);
+          // a row in the popup opens that video's player
+          marker.on('popupopen', e => {
+            e.popup.getElement().querySelectorAll('[data-vid]').forEach(el =>
+              el.addEventListener('click', () => { playerId.value = el.dataset.vid; }));
+          });
+        }
+      }
+
+      function ensureLoc(v) {
+        if (!v.loc) v.loc = { spotId: null, name: '', lat: null, lng: null };
+      }
+
+      function select(v) {
+        selectedId.value = v.id;
+        if (hasPin(v) && map) map.setView([v.loc.lat, v.loc.lng], Math.max(map.getZoom(), 13));
+      }
+
+      function startPick(v) {
+        selectedId.value = v.id;
+        pickId.value = v.id;
+      }
+
+      function toggleEdit() {
+        editMode.value = !editMode.value;
+        pickId.value = null;
+      }
+
+      // value shown in the Location dropdown for a video
+      function locValue(v) {
+        return v.loc ? (v.loc.spotId || 'custom') : '';
+      }
+
+      function applySpot(v, val) {
+        if (val === '') { v.loc = null; pickId.value = null; return; }
+        if (val === 'custom') { ensureLoc(v); v.loc.spotId = null; startPick(v); return; }
+        const s = SPOTS.find(x => x.id === val);
+        if (!s) return;
+        v.loc = { spotId: s.id, name: s.name, lat: s.lat, lng: s.lng };
+        if (s.lat == null) {
+          startPick(v);                       // no coordinates known: click the map to place it
+        } else {
+          pickId.value = null;
+          if (map) map.setView([s.lat, s.lng], 14);
+        }
+      }
+
+      // typing a new date un-confirms it
+      function setFilmed(v, val) {
+        v.filmed = val.trim();
+        v.dateOk = false;
+      }
+      function canConfirm(v) {
+        return !!v.filmed && !dateBad(v.filmed);
+      }
+      function confirmDate(v) {
+        if (v.dateOk) v.dateOk = false;
+        else if (canConfirm(v)) v.dateOk = true;
+      }
+      // true when a filled-in date is not a real yyyy-mm-dd
+      function dateBad(s) {
+        return !!s && !(/^\d{4}-\d{2}-\d{2}$/.test(s) && !isNaN(Date.parse(s)));
+      }
+
+      function clearLoc(v) {
+        v.loc = null;
+        if (pickId.value === v.id) pickId.value = null;
+      }
+
+      // ---- likes
+      const friendLikes = v => v.likes.filter(n => n !== 'You');
+      function toggleLike(v, name) {
+        const i = v.likes.indexOf(name);
+        if (i >= 0) v.likes.splice(i, 1); else v.likes.push(name);
+      }
+      function removeLike(v, name) {
+        const i = v.likes.indexOf(name);
+        if (i >= 0) v.likes.splice(i, 1);
+      }
+      function addLike(v) {
+        const n = (drafts[v.id] || '').trim();
+        if (n && !v.likes.includes(n)) v.likes.push(n);
+        drafts[v.id] = '';
+      }
+
+      // ---- misc actions
+      function guessOther() {
+        let n = 0;
+        for (const v of state.videos) {
+          if (v.kind === 'unsorted' && GAME_RE.test(v.title)) { v.kind = 'other'; n++; }
+        }
+        alert(`Marked ${n} unsorted videos as Not basketball. Check the list and flip any mistakes.`);
+      }
+
+      function exportData() {
+        const blob = new Blob([JSON.stringify({ videos: state.videos }, null, 2)], { type: 'application/json' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'basketball-tracker.json';
+        a.click();
+        URL.revokeObjectURL(a.href);
+      }
+
+      function importData(e) {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = () => {
+          try {
+            const data = JSON.parse(reader.result);
+            const byId = new Map(data.videos.map(v => [v.id, v]));
+            let n = 0;
+            for (const v of state.videos) {
+              const s = byId.get(v.id);
+              if (!s) continue;
+              v.kind = s.kind || v.kind;
+              v.filmed = s.filmed || v.filmed || '';
+              v.dateOk = !!s.dateOk;
+              v.loc = s.loc || null;
+              v.likes = Array.isArray(s.likes) ? s.likes : [];
+              n++;
+            }
+            alert(`Imported ${n} videos.`);
+          } catch (err) {
+            alert('That file is not a valid tracker export.');
+          }
+        };
+        reader.readAsText(file);
+        e.target.value = '';
+      }
+
+      // ---- ui helpers
+      const tabClass = id => ['px-4 py-2 rounded font-semibold text-sm',
+        tab.value === id ? 'bg-orange-500 text-white' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'].join(' ');
+      const chipClass = on => ['px-2.5 py-1 rounded text-xs font-semibold',
+        on ? 'bg-orange-500 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'].join(' ');
+      const locChipClass = on => ['px-2 py-0.5 rounded-full border text-[11px] font-medium',
+        on ? 'bg-sky-600 border-sky-400 text-white' : 'bg-slate-800 border-slate-600 text-slate-300 hover:bg-slate-700'].join(' ');
+
+      // spots grouped as country -> city, in the order they first appear in SPOTS
+      const spotGroups = computed(() => {
+        const groups = [];
+        for (const s of SPOTS) {
+          const [country, city] = SPOT_AREA[s.id] || ['Other', 'Other'];
+          let g = groups.find(x => x.country === country);
+          if (!g) groups.push(g = { country, cities: [] });
+          let c = g.cities.find(x => x.city === city);
+          if (!c) g.cities.push(c = { city, spots: [] });
+          c.spots.push(s);
+        }
+        return groups;
+      });
+
+      // ---- persistence
+      watch(state, () => {
+        try { localStorage.setItem(STORE_KEY, JSON.stringify({ videos: state.videos })); } catch (e) {}
+        renderMarkers();
+      }, { deep: true });
+
+      // leaflet needs a size refresh when its tab becomes visible
+      watch(tab, t => { if (t === 'map' && map) nextTick(() => map.invalidateSize()); });
+
+      onMounted(() => {
+        map = L.map(mapEl.value).setView([35.68, 139.76], 10);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          maxZoom: 19,
+          attribution: '© OpenStreetMap',
+        }).addTo(map);
+        // spots that sit close together merge into one numbered cluster when zoomed out
+        layer = L.markerClusterGroup({
+          maxClusterRadius: 45,
+          showCoverageOnHover: false,
+          iconCreateFunction: cluster => {
+            // count of videos, labelled with the city holding most of them
+            const byCity = {};
+            let n = 0;
+            for (const m of cluster.getAllChildMarkers()) {
+              const c = m.options.videoCount || 0;
+              n += c;
+              const city = m.options.city || '';
+              if (city) byCity[city] = (byCity[city] || 0) + c;
+            }
+            const cities = Object.entries(byCity).sort((a, b) => b[1] - a[1]);
+            const label = cities.length ? cities[0][0] + (cities.length > 1 ? ` +${cities.length - 1}` : '') : '';
+            return L.divIcon({
+              className: 'cluster-marker',
+              html: `<div class="cluster-wrap"><div class="cluster-pin">${n}</div>${label ? `<div class="cluster-city">${esc(label)}</div>` : ''}</div>`,
+              iconSize: [80, 62],
+              iconAnchor: [40, 22],
+            });
+          },
+        }).addTo(map);
+        map.on('click', e => {
+          if (!pickId.value) return;
+          const v = state.videos.find(x => x.id === pickId.value);
+          if (v) {
+            ensureLoc(v);
+            v.loc.lat = Math.round(e.latlng.lat * 1e5) / 1e5;
+            v.loc.lng = Math.round(e.latlng.lng * 1e5) / 1e5;
+          }
+          pickId.value = null;
+        });
+        renderMarkers();
+      });
+
+      return {
+        tabs, tab, tabClass, chipClass, filter, filters, editMode, toggleEdit, setFilmed, dateBad, RELEASED,
+        showConfirmed, confirmedCount, showLocated, locatedCount, customOnly, customCount, confirmDate, canConfirm,
+        q, mapQ, likedOnly, kinds: KINDS, counts, visibleVideos, mapList, likeVideos,
+        selected, selectedId, pickId, mapEl, drafts, spots: SPOTS,
+        thumb, ytUrl, hasPin, select, locValue, applySpot, clearLoc, locChipClass, spotGroups, playerId, playerVideo, locOpenIds, toggleLocOpen,
+        friendLikes, toggleLike, removeLike, addLike,
+        guessOther, exportData, importData,
+      };
+    },
+  }).mount('#app');
+</script>
+</body>
+</html>
